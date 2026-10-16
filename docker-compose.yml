@@ -1,0 +1,262 @@
+x-airflow-common:
+  &airflow-common
+  build: ./airflow
+  image: bdst-airflow:3.0.6
+  environment:
+    &airflow-common-env
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__CORE__AUTH_MANAGER: airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@airflow-postgres/airflow
+    AIRFLOW__CORE__FERNET_KEY: ''
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
+    AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
+    AIRFLOW__CORE__DEFAULT_TIMEZONE: 'utc'
+    AIRFLOW__CORE__EXECUTION_API_SERVER_URL: 'http://airflow-apiserver:8080/execution/'
+    AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: 'true'
+    AIRFLOW__DAG_PROCESSOR__REFRESH_INTERVAL: '30'
+    AIRFLOW_CONFIG: '/opt/airflow/config/airflow.cfg'
+    # --- project settings (read by plugins/celestrak/config.py) ---
+    CELESTRAK_USER_AGENT: ${CELESTRAK_USER_AGENT:-bdst-student-project/1.0}
+    S3_ENDPOINT_URL: http://seaweedfs:8333
+    S3_ACCESS_KEY: ${S3_ACCESS_KEY:-bdst}
+    S3_SECRET_KEY: ${S3_SECRET_KEY:-bdst-secret}
+    S3_RAW_BUCKET: raw
+    DWH_PG_HOST: dwh-postgres
+    DWH_PG_PORT: 5432
+    DWH_PG_DB: dwh
+    DWH_PG_USER: ${DWH_PG_USER:-dwh}
+    DWH_PG_PASSWORD: ${DWH_PG_PASSWORD:-dwh}
+    MYSQL_HOST: mysql
+    MYSQL_PORT: 3306
+    MYSQL_DB: ods
+    MYSQL_USER: ${MYSQL_USER:-dwh}
+    MYSQL_PASSWORD: ${MYSQL_PASSWORD:-dwh}
+    CH_HOST: clickhouse
+    CH_PORT: 8123
+    CH_DB: ods
+    CH_USER: ${CH_USER:-dwh}
+    CH_PASSWORD: ${CH_PASSWORD:-dwh}
+    REPORTS_DIR: /opt/airflow/reports
+    SQL_DIR: /opt/airflow/sql
+  volumes:
+    - ./dags:/opt/airflow/dags
+    - ./plugins:/opt/airflow/plugins
+    - ./sql:/opt/airflow/sql
+    - ./reports:/opt/airflow/reports
+    - ./airflow/config:/opt/airflow/config
+    - airflow-logs:/opt/airflow/logs
+  user: "${AIRFLOW_UID:-50000}:0"
+  depends_on:
+    &airflow-common-depends-on
+    airflow-postgres:
+      condition: service_healthy
+
+services:
+  # ---------------- Airflow metadata DB ----------------
+  airflow-postgres:
+    image: postgres:16.4
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    volumes:
+      - airflow-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "airflow"]
+      interval: 10s
+      retries: 5
+      start_period: 5s
+    restart: always
+
+  # ---------------- Storage #0: raw files (S3) ----------------
+  seaweedfs:
+    image: chrislusf/seaweedfs:3.80
+    command: >
+      server -dir=/data -ip=seaweedfs -ip.bind=0.0.0.0
+      -master.volumeSizeLimitMB=256 -volume.max=100
+      -filer -s3 -s3.port=8333 -s3.config=/etc/seaweedfs/s3.json
+    volumes:
+      - seaweedfs-data:/data
+      - ./infra/seaweedfs/s3.json:/etc/seaweedfs/s3.json:ro
+    ports:
+      - "8333:8333"   # S3 API
+      - "8888:8888"   # filer UI (browse raw files)
+      - "9333:9333"   # master UI
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:9333/cluster/status >/dev/null"]
+      interval: 10s
+      retries: 10
+      start_period: 10s
+    restart: always
+
+  # ---------------- Storage #1: PostgreSQL (ODS + meta) ----------------
+  dwh-postgres:
+    image: postgres:16.4
+    environment:
+      POSTGRES_USER: ${DWH_PG_USER:-dwh}
+      POSTGRES_PASSWORD: ${DWH_PG_PASSWORD:-dwh}
+      POSTGRES_DB: dwh
+    volumes:
+      - dwh-postgres-data:/var/lib/postgresql/data
+      - ./sql/ods/postgres:/docker-entrypoint-initdb.d:ro
+    ports:
+      - "5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d dwh"]
+      interval: 10s
+      retries: 5
+      start_period: 5s
+    restart: always
+
+  # ---------------- Storage #2: MySQL (comparison only) ----------------
+  mysql:
+    image: mysql:8.4.3
+    profiles: ["compare"]
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root}
+      MYSQL_DATABASE: ods
+      MYSQL_USER: ${MYSQL_USER:-dwh}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-dwh}
+    command: ["--character-set-server=utf8mb4", "--collation-server=utf8mb4_0900_ai_ci",
+              "--local-infile=1"]
+    volumes:
+      - mysql-data:/var/lib/mysql
+      - ./sql/ods/mysql:/docker-entrypoint-initdb.d:ro
+    ports:
+      - "3307:3306"
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -u root -p$${MYSQL_ROOT_PASSWORD} --silent"]
+      interval: 10s
+      retries: 10
+      start_period: 30s
+    restart: always
+
+  # ---------------- Storage #3: ClickHouse (comparison only) ----------------
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.8.4.13
+    profiles: ["compare"]
+    environment:
+      CLICKHOUSE_DB: ods
+      CLICKHOUSE_USER: ${CH_USER:-dwh}
+      CLICKHOUSE_PASSWORD: ${CH_PASSWORD:-dwh}
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+      - ./sql/ods/clickhouse:/docker-entrypoint-initdb.d:ro
+    ports:
+      - "8123:8123"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8123/ping | grep -q Ok"]
+      interval: 10s
+      retries: 10
+      start_period: 10s
+    restart: always
+
+  # ---------------- Airflow ----------------
+  airflow-apiserver:
+    <<: *airflow-common
+    command: api-server
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/api/v2/version"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: always
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-scheduler:
+    <<: *airflow-common
+    command: scheduler
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8974/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: always
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+      seaweedfs:
+        condition: service_healthy
+      dwh-postgres:
+        condition: service_healthy
+
+  airflow-dag-processor:
+    <<: *airflow-common
+    command: dag-processor
+    healthcheck:
+      test: ["CMD-SHELL", 'airflow jobs check --job-type DagProcessorJob --hostname "$${HOSTNAME}"']
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: always
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-triggerer:
+    <<: *airflow-common
+    command: triggerer
+    healthcheck:
+      test: ["CMD-SHELL", 'airflow jobs check --job-type TriggererJob --hostname "$${HOSTNAME}"']
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: always
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-init:
+    <<: *airflow-common
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        mkdir -p /opt/airflow/{logs,config,reports}
+        /entrypoint airflow version
+        /entrypoint airflow config list >/dev/null
+        chown -R "${AIRFLOW_UID:-50000}:0" /opt/airflow/logs /opt/airflow/config
+    environment:
+      <<: *airflow-common-env
+      _AIRFLOW_DB_MIGRATE: 'true'
+      _AIRFLOW_WWW_USER_CREATE: 'true'
+      _AIRFLOW_WWW_USER_USERNAME: ${_AIRFLOW_WWW_USER_USERNAME:-airflow}
+      _AIRFLOW_WWW_USER_PASSWORD: ${_AIRFLOW_WWW_USER_PASSWORD:-airflow}
+    user: "0:0"
+
+  airflow-cli:
+    <<: *airflow-common
+    profiles:
+      - debug
+    environment:
+      <<: *airflow-common-env
+      CONNECTION_CHECK_MAX_COUNT: "0"
+    command:
+      - bash
+      - -c
+      - airflow
+
+volumes:
+  airflow-postgres-data:
+  airflow-logs:
+  seaweedfs-data:
+  dwh-postgres-data:
+  mysql-data:
+  clickhouse-data:

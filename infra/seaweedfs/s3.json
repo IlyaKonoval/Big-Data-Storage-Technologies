@@ -1,0 +1,11 @@
+{
+  "identities": [
+    {
+      "name": "bdst",
+      "credentials": [
+        { "accessKey": "bdst", "secretKey": "bdst-secret" }
+      ],
+      "actions": ["Admin", "Read", "List", "Tagging", "Write"]
+    }
+  ]
+}

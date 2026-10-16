@@ -1,0 +1,12 @@
+# Local development environment (IDE autocompletion, unit tests).
+# The DAGs themselves run in the Docker image built from airflow/Dockerfile.
+#   py -3.11 -m venv .venv
+#   .venv\Scripts\python -m pip install -r requirements-dev.txt ^
+#       -c https://raw.githubusercontent.com/apache/airflow/constraints-3.0.6/constraints-3.11.txt
+apache-airflow==3.0.6
+-r airflow/requirements.txt
+pandas
+boto3
+psycopg2-binary
+requests
+pytest
