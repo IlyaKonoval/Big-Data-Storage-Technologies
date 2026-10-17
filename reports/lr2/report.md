@@ -273,26 +273,3 @@ DAG `data_quality` запускается после `vault_business`. Кажд�
   `sat_conjunction` растёт быстрее остальных — кандидат на партиционирование и TTL.
 - Объём данных пока небольшой (2 суток истории).
 
-## 10. Демонстрация
-
-1. `docker compose up -d`, Airflow http://localhost:8080: DAG с тегом `lr2`
-   (`vault_satcat`, `vault_orbit`, `vault_conjunction`, `vault_business`, `data_quality`);
-   вкладка **Assets** — граф зависимостей; у запусков `vault_business` и `data_quality` тип
-   `asset_triggered`.
-2. ClickHouse http://localhost:8123/play (dwh/dwh):
-```sql
--- что дал каждый снимок
-SELECT load_id, ods_rows, steps FROM meta.vault_log FINAL ORDER BY finished_at;
--- история объекта (SCD2)
-SELECT * FROM bv.object_status_history WHERE norad_cat_id = 25544;
--- орбита STARLINK-1008 по двум источникам: радар (gp) и оператор (supgp)
-SELECT h.norad_cat_id, d.source, d.epoch, round(d.perigee_km), round(d.apogee_km), d.orbit_regime
-FROM bv.sat_object_orbit_derived d JOIN rv.hub_object h USING hk_object
-WHERE h.norad_cat_id = 44714 ORDER BY d.epoch;
--- текущие опасные сближения
-SELECT * FROM bv.conjunction_current ORDER BY max_prob DESC LIMIT 10;
--- последний прогон DQ
-SELECT check_name, severity, violations, passed FROM meta.dq_results
-WHERE run_id = (SELECT argMax(run_id, checked_at) FROM meta.dq_results);
-```
-3. Тесты структуры SQL: [`tests/test_vault.py`](../../tests/test_vault.py).
