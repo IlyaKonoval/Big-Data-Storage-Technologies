@@ -4,16 +4,7 @@
 [CelesTrak](https://celestrak.org): каталог объектов, орбитальные элементы,
 операторские эфемериды Starlink и прогноз опасных сближений.
 
-| ЛР | Содержание | Статус |
-|---|---|---|
-| 1 | Airflow, ETL в слой ODS, сравнение трёх хранилищ | ✅ |
-| 2 | DDS (3НФ, SCD2), зависимости DAG, Data Quality | — |
-| 3 | Витрины, Superset, OpenMetadata lineage | — |
 
-Предметная область (термины, поля, коды, сущности, особенности данных) —
-[docs/domain.md](docs/domain.md). Как устроены DAG и разбор API —
-[docs/implementation.md](docs/implementation.md). План архитектуры — [docs/architecture-plan.md](docs/architecture-plan.md),
-отчёт ЛР1 — [reports/lr1/report.md](reports/lr1/report.md).
 
 ## Архитектура (ЛР1)
 
