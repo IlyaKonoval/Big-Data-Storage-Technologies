@@ -77,6 +77,7 @@ def storage_benchmark():
                 started = time.perf_counter()
                 db.load_csv(load_schema, name, SOURCES[name].ods_columns, path)
                 seconds = time.perf_counter() - started
+                db.analyze(load_schema, name)  # outside the timing; see Target.analyze
                 loaded = db.count(name, schema=load_schema)
                 if loaded != info["rows"]:
                     raise AirflowFailException(

@@ -30,6 +30,10 @@ class Target(ABC):
     def load_csv(self, schema: str, table: str, columns: list[str], path: str) -> None:
         """Replace the table contents with the CSV file at path."""
 
+    def analyze(self, schema: str, table: str) -> None:
+        """Refresh optimizer statistics after a bulk load (stale stats -> bad join plans)."""
+        self.execute(f"ANALYZE TABLE {schema}.{table}")
+
     @abstractmethod
     def query(self, sql: str) -> list[tuple]: ...
 
@@ -93,6 +97,9 @@ class PostgresTarget(Target):
         with self.conn, self.conn.cursor() as cur:
             cur.execute(sql)
 
+    def analyze(self, schema, table):
+        self.execute(f"ANALYZE {schema}.{table}")
+
     def table_bytes(self, schema, table):
         return int(self.query(f"SELECT pg_total_relation_size('{schema}.{table}')")[0][0])
 
@@ -122,6 +129,9 @@ class MySQLTarget(Target):
             cur.execute(f"TRUNCATE TABLE {schema}.{table}")
             cur.execute(sql)
         self.conn.commit()
+
+    def analyze(self, schema, table):
+        self.query(f"ANALYZE TABLE {schema}.{table}")  # returns a status result set
 
     def query(self, sql):
         with self.conn.cursor() as cur:
@@ -165,6 +175,9 @@ class ClickHouseTarget(Target):
                 f"{schema}.{table}", column_names=columns, insert_block=f, fmt="CSVWithNames",
                 settings={"date_time_input_format": "best_effort"},
             )
+
+    def analyze(self, schema, table):
+        pass  # MergeTree keeps no cost-based statistics to refresh
 
     def query(self, sql):
         return self.client.query(sql).result_rows
