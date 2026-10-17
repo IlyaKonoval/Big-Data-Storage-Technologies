@@ -11,7 +11,8 @@
 | 3 | Витрины, Superset, OpenMetadata lineage | — |
 
 Предметная область (термины, поля, коды, сущности, особенности данных) —
-[docs/domain.md](docs/domain.md). План архитектуры — [docs/architecture-plan.md](docs/architecture-plan.md),
+[docs/domain.md](docs/domain.md). Как устроены DAG и разбор API —
+[docs/implementation.md](docs/implementation.md). План архитектуры — [docs/architecture-plan.md](docs/architecture-plan.md),
 отчёт ЛР1 — [reports/lr1/report.md](reports/lr1/report.md).
 
 ## Архитектура (ЛР1)
