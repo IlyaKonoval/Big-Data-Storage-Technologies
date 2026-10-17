@@ -89,9 +89,12 @@ services:
       start_period: 10s
     restart: always
 
-  # ---------------- Storage #1: PostgreSQL (ODS + meta) ----------------
+  # ---------------- Archived: PostgreSQL (ЛР1 comparison only) ----------------
+  # Was the ODS until 17.10.2026; data migrated to ClickHouse
+  # (sql/migrations/2026-10-17_postgres_to_clickhouse.sql). Start with --profile archive.
   dwh-postgres:
     image: postgres:16.4
+    profiles: ["archive"]
     environment:
       POSTGRES_USER: ${DWH_PG_USER:-dwh}
       POSTGRES_PASSWORD: ${DWH_PG_PASSWORD:-dwh}
@@ -108,10 +111,10 @@ services:
       start_period: 5s
     restart: always
 
-  # ---------------- Storage #2: MySQL (comparison only) ----------------
+  # ---------------- Archived: MySQL (ЛР1 comparison only) ----------------
   mysql:
     image: mysql:8.4.3
-    profiles: ["compare"]
+    profiles: ["archive"]
     environment:
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root}
       MYSQL_DATABASE: ods
@@ -131,10 +134,9 @@ services:
       start_period: 30s
     restart: always
 
-  # ---------------- Storage #3: ClickHouse (comparison only) ----------------
+  # ---------------- Main storage: ClickHouse (ODS, meta, Data Vault) ----------------
   clickhouse:
     image: clickhouse/clickhouse-server:24.8.4.13
-    profiles: ["compare"]
     environment:
       CLICKHOUSE_DB: ods
       CLICKHOUSE_USER: ${CH_USER:-dwh}
@@ -190,7 +192,7 @@ services:
         condition: service_completed_successfully
       seaweedfs:
         condition: service_healthy
-      dwh-postgres:
+      clickhouse:
         condition: service_healthy
 
   airflow-dag-processor:
@@ -232,6 +234,7 @@ services:
         mkdir -p /opt/airflow/{logs,config,reports}
         /entrypoint airflow version
         /entrypoint airflow config list >/dev/null
+        /entrypoint airflow pools set vault 1 "Serializes Data Vault loads (shared hubs)"
         chown -R "${AIRFLOW_UID:-50000}:0" /opt/airflow/logs /opt/airflow/config
     environment:
       <<: *airflow-common-env

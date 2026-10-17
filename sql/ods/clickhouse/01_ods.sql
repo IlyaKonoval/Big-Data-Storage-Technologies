@@ -1,5 +1,5 @@
--- ODS copy in ClickHouse for the storage comparison (filled by storage_benchmark from
--- the CSV export of PostgreSQL ODS), columnar MergeTree storage.
+-- ODS layer in ClickHouse (main storage): raw CelesTrak snapshots, append-only.
+-- Every load appends a full snapshot tagged with load_id / loaded_at.
 -- Sorting key = typical access path (object + time); partitions by load month.
 CREATE DATABASE IF NOT EXISTS ods;
 
@@ -106,3 +106,11 @@ CREATE TABLE IF NOT EXISTS ods.socrates
 ENGINE = MergeTree
 PARTITION BY toYYYYMM(loaded_at)
 ORDER BY (loaded_at, norad_cat_id_1, norad_cat_id_2);
+
+-- Scratch copies for the bulk-load benchmark: the ODS CSV export is loaded here, so
+-- ClickHouse is measured on the same input as PostgreSQL/MySQL without touching ODS.
+CREATE DATABASE IF NOT EXISTS bench;
+CREATE TABLE IF NOT EXISTS bench.satcat   AS ods.satcat;
+CREATE TABLE IF NOT EXISTS bench.gp       AS ods.gp;
+CREATE TABLE IF NOT EXISTS bench.supgp    AS ods.supgp;
+CREATE TABLE IF NOT EXISTS bench.socrates AS ods.socrates;

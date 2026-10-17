@@ -1,95 +1,88 @@
-"""Technical metadata in PostgreSQL (schema meta): raw file registry and load log."""
+"""Technical metadata in ClickHouse (database meta): raw file registry and load log.
+
+ClickHouse has no UPSERT: rewritten rows (load_log, vault_log) live in ReplacingMergeTree
+tables and are read with FINAL, which keeps only the newest version of each key.
+"""
 from contextlib import contextmanager
 
-import psycopg2
+import clickhouse_connect
 
 from celestrak import config
 
 
 @contextmanager
-def _cursor():
-    s = config.postgres()
-    conn = psycopg2.connect(
-        host=s.host, port=s.port, dbname=s.database, user=s.user, password=s.password
+def client():
+    s = config.clickhouse()
+    ch = clickhouse_connect.get_client(
+        host=s.host, port=s.port, username=s.user, password=s.password, database="meta",
+        send_receive_timeout=900,
     )
     try:
-        with conn, conn.cursor() as cur:
-            yield cur
+        yield ch
     finally:
-        conn.close()
+        ch.close()
 
 
 def last_sha256(source: str) -> str | None:
     """Hash of the latest raw file of the source that was loaded everywhere successfully."""
-    with _cursor() as cur:
-        cur.execute(
+    with client() as ch:
+        rows = ch.query(
             """
             SELECT f.sha256
-            FROM meta.raw_files f
-            WHERE f.source = %s
-              AND NOT EXISTS (SELECT 1 FROM meta.load_log l
-                              WHERE l.load_id = f.load_id AND l.status <> 'success')
-              AND EXISTS (SELECT 1 FROM meta.load_log l WHERE l.load_id = f.load_id)
+            FROM meta.raw_files AS f FINAL
+            WHERE f.source = {source:String}
+              AND f.load_id IN (SELECT load_id FROM meta.load_log FINAL
+                                GROUP BY load_id HAVING countIf(status != 'success') = 0)
             ORDER BY f.fetched_at DESC
             LIMIT 1
             """,
-            (source,),
-        )
-        row = cur.fetchone()
-    return row[0] if row else None
+            parameters={"source": source},
+        ).result_rows
+    return rows[0][0] if rows else None
 
 
 def register_raw_file(load_id, source, s3_key, url, size, sha256, fetched_at, dag_run_id):
-    with _cursor() as cur:
-        cur.execute(
-            """
-            INSERT INTO meta.raw_files
-                (load_id, source, s3_key, url, bytes, sha256, fetched_at, dag_run_id)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (load_id) DO NOTHING
-            """,
-            (load_id, source, s3_key, url, size, sha256, fetched_at, dag_run_id),
+    with client() as ch:
+        ch.insert(
+            "meta.raw_files",
+            [(load_id, source, s3_key, url, size, sha256, fetched_at, dag_run_id)],
+            column_names=["load_id", "source", "s3_key", "url", "bytes", "sha256",
+                          "fetched_at", "dag_run_id"],
         )
 
 
 def log_load(load_id, source, target_db, rows, duration_sec, status, error=None):
-    with _cursor() as cur:
-        cur.execute(
-            """
-            INSERT INTO meta.load_log
-                (load_id, source, target_db, rows_loaded, duration_sec, status, error)
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (load_id, target_db) DO UPDATE
-               SET rows_loaded = EXCLUDED.rows_loaded,
-                   duration_sec = EXCLUDED.duration_sec,
-                   status = EXCLUDED.status,
-                   error = EXCLUDED.error,
-                   finished_at = now() AT TIME ZONE 'utc'
-            """,
-            (load_id, source, target_db, rows, duration_sec, status, error),
+    with client() as ch:
+        ch.insert(
+            "meta.load_log",
+            [(load_id, source, target_db, rows, duration_sec, status, error)],
+            column_names=["load_id", "source", "target_db", "rows_loaded", "duration_sec",
+                          "status", "error"],
         )
+
+
+BENCHMARK_COLUMNS = ["run_id", "run_at", "dbms", "test_group", "test_name", "metric",
+                     "value", "rows"]
 
 
 def benchmark_rows(rows: list[tuple]) -> None:
     """rows: (run_id, run_at, dbms, test_group, test_name, metric, value, rows)."""
-    with _cursor() as cur:
-        cur.executemany(
-            """
-            INSERT INTO meta.benchmark_results
-                (run_id, run_at, dbms, test_group, test_name, metric, value, rows)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-            """,
-            rows,
-        )
+    with client() as ch:
+        ch.insert("meta.benchmark_results", rows, column_names=BENCHMARK_COLUMNS)
 
 
 def benchmark_results(run_id: str) -> list[tuple]:
-    with _cursor() as cur:
-        cur.execute(
+    with client() as ch:
+        return ch.query(
             """
             SELECT dbms, test_group, test_name, metric, value, rows
-            FROM meta.benchmark_results WHERE run_id = %s ORDER BY id
+            FROM meta.benchmark_results WHERE run_id = {run_id:String}
             """,
-            (run_id,),
-        )
-        return cur.fetchall()
+            parameters={"run_id": run_id},
+        ).result_rows
+
+
+def raw_bytes_by_source() -> dict[str, int]:
+    with client() as ch:
+        rows = ch.query("SELECT source, sum(bytes) FROM meta.raw_files FINAL GROUP BY source")
+    return {source: int(total) for source, total in rows.result_rows}

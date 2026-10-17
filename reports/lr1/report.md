@@ -22,6 +22,10 @@ download … Please limit requests to once every 2 hours`. Поэтому рас
 
 ## 2. Архитектура
 
+> Разделы 2–3 описывают систему на момент сдачи ЛР1 (16.10.2026), когда ODS жил в PostgreSQL.
+> С 17.10 основное хранилище — ClickHouse, см. «Пересмотр выбора» в разделе 4; актуальная
+> схема — [`diagrams/architecture.png`](../../diagrams/architecture.png).
+
 ```
 CelesTrak ──► Airflow: ingest_satcat / ingest_gp / ingest_supgp / ingest_socrates
                 │ extract: 1 HTTP-запрос, валидация, sha256
@@ -165,20 +169,48 @@ SOCRATES (328 тыс. строк, 70 МБ CSV).
 строк/с в первом замере 16.10 и 474–554 тыс. в замерах 17.10. JOIN q4 в MySQL до добавления
 `ANALYZE` занимал 244 мс, после — 72 мс. Соотношение СУБД и выводы при этом не изменились.
 
-**Выбор:** PostgreSQL — основное хранилище ODS, DDS и витрин. ClickHouse — кандидат для
-аналитических витрин, если объём истории вырастет. Оценка роста: GP около 100 тыс. строк в сутки,
-SOCRATES до 400 тыс., то есть больше 10 млн строк в месяц; на таком объёме преимущество
-колоночного хранения будет заметнее. Бенчмарк можно перезапустить в любой момент: он берёт
-весь накопленный ODS.
+**Первоначальный выбор (16.10):** PostgreSQL — основное хранилище ODS, DDS и витрин,
+ClickHouse — кандидат для аналитических витрин, если объём истории вырастет.
+
+### Пересмотр выбора (17.10.2026): основное хранилище — ClickHouse
+После выбора модели DDS (Data Vault 2.0, см. [отчёт ЛР2](../lr2/report.md)) решение
+пересмотрено в пользу ClickHouse. Аргументы — те же замеры, но с другими весами:
+
+* **Рост данных.** GP около 100 тыс. строк в сутки, SOCRATES до 400 тыс. — больше 10 млн строк
+  в месяц. Здесь важнее всего скорость сканов (в 10 раз быстрее PostgreSQL) и сжатие (в 5–8 раз
+  меньше места), а не поиск по ключу.
+* **Нагрузка аналитическая.** Все запросы витрин ЛР3 — агрегации по истории; точечный поиск
+  (единственное, где ClickHouse заметно уступает: 6 мс против 0.3 мс) им не нужен.
+* **Модель данных совместима.** Data Vault — insert-only: строки только добавляются, никогда
+  не обновляются. Это родной режим MergeTree, а сильные стороны PostgreSQL (UPDATE, `ON CONFLICT`,
+  SCD2 через обновление `valid_to`) в DV2 не требуются.
+* **Недостатки компенсируются.** Нет FK и уникальных ключей — загрузка вставляет только
+  отсутствующие ключи, таблицы vault на ReplacingMergeTree, целостность проверяет DAG
+  `data_quality`. Нет транзакций — один INSERT-блок атомарен, а повтор любого шага идемпотентен.
+* **BI и lineage.** Superset и OpenMetadata поддерживают ClickHouse; журнал запросов
+  `system.query_log` даёт OpenMetadata материал для lineage.
+
+Как выполнен переход:
+1. ODS и `meta` скопированы из PostgreSQL в ClickHouse с теми же `load_id` и `loaded_at`
+   ([скрипт](../../sql/migrations/2026-10-17_postgres_to_clickhouse.sql)). Перенос сверен по
+   каждому снимку: число строк и контрольные суммы колонок совпали. Найдена и исправлена ошибка:
+   функция `postgresql()` переводит `date` в тип ClickHouse `Date` (с 1970 г.), и даты запусков
+   1957–1969 «переполнялись» (1957 → 2137); SATCAT перенесён через CSV в `Date32`.
+2. `ingest_*` пишут в ClickHouse (`DELETE` прежней попытки по `load_id` + один INSERT-блок).
+3. PostgreSQL dwh и MySQL переведены в профиль compose `archive`, их тома удалены. Дамп
+   PostgreSQL сохранён в `s3://archive/dwh-postgres/dwh_2026-10-17.dump`.
+4. `storage_benchmark` теперь выгружает ODS из ClickHouse; для запуска поднимается профиль
+   `archive` (initdb создаёт схемы PostgreSQL и MySQL заново).
 
 **Ограничения эксперимента:** небольшой объём (1–3 снимка на набор), «тёплые» кэши, настройки СУБД
 по умолчанию (`shared_buffers` и `innodb_buffer_pool_size` по 128 МБ), один хост.
 
 ## 5. Демонстрация
-1. `docker compose up -d --build && docker compose --profile compare up -d`
+1. `docker compose up -d --build` (для сравнения ещё `docker compose --profile archive up -d`)
 2. Airflow http://localhost:8080 (airflow/airflow): DAG `ingest_*` с тегом `lr1`, граф
    `extract → load_ods → validate`, журнал пропуска с 403.
 3. Сырые файлы: http://localhost:8888/buckets/raw/
-4. Данные: PostgreSQL `localhost:5433/dwh` (`ods.*`, `meta.*`), MySQL `localhost:3307/ods`,
-   ClickHouse http://localhost:8123/play (`SELECT count() FROM ods.socrates`).
-5. Сравнение: запустить `storage_benchmark`, результаты в `reports/lr1/`.
+4. Данные: ClickHouse http://localhost:8123/play (`ods.*`, `meta.*`,
+   `SELECT load_id, count() FROM ods.gp GROUP BY load_id`).
+5. Сравнение: при поднятом профиле `archive` запустить `storage_benchmark`, результаты в
+   `reports/lr1/`; копии ODS — PostgreSQL `localhost:5433/dwh`, MySQL `localhost:3307/ods`.

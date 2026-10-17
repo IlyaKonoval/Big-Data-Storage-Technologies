@@ -18,13 +18,15 @@ TABLES = list(SOURCES)
 
 DOC = """
 ### Сравнение хранилищ (ЛР1, п.5)
-Требует профиль `compare`: `docker compose --profile compare up -d`.
+Требует архивные СУБД: `docker compose --profile archive up -d` (PostgreSQL и MySQL).
 
-1. **export_ods** — выгружает все таблицы ODS из PostgreSQL в CSV (`s3://exports/<run>/`).
+1. **export_ods** — выгружает все таблицы ODS из ClickHouse (основное хранилище) в CSV
+   (`s3://exports/<run>/`).
 2. **bench_postgres → bench_mysql → bench_clickhouse** — по очереди (чтобы СУБД не
    конкурировали за CPU/диск): загрузка одного и того же CSV родным bulk-методом,
    проверка числа строк, 6 аналитических запросов (медиана из 5), размер на диске.
-   После этого шага в MySQL и ClickHouse лежит та же копия ODS, что и в PostgreSQL.
+   ClickHouse грузит в базу `bench`, чтобы не трогать ODS; PostgreSQL и MySQL — в свою
+   схему `ods`, где лежит только эта копия.
 3. **render_report** — графики и таблица в `reports/lr1/`, сырые цифры в `meta.benchmark_results`.
 """
 
@@ -44,14 +46,14 @@ def storage_benchmark():
     def export_ods(dag_run=None) -> dict:
         prefix = dag_run.run_id.replace(":", "-").replace("+", "")
         exported = {}
-        with targets.connect("postgres") as pg, tempfile.TemporaryDirectory() as tmp:
+        with targets.connect("clickhouse") as ch, tempfile.TemporaryDirectory() as tmp:
             for name in TABLES:
                 path = os.path.join(tmp, f"{name}.csv")
-                pg.export_csv(name, SOURCES[name].ods_columns, path)
+                ch.export_csv(name, SOURCES[name].ods_columns, path)
                 key = f"{prefix}/{name}.csv"
                 with open(path, "rb") as f:
                     s3.put(key, f.read(), "text/csv", bucket=EXPORT_BUCKET)
-                exported[name] = {"key": key, "rows": pg.count(name),
+                exported[name] = {"key": key, "rows": ch.count(name),
                                   "bytes": os.path.getsize(path)}
                 log.info("Exported ods.%s: %s", name, exported[name])
         if not any(e["rows"] for e in exported.values()):
@@ -66,9 +68,9 @@ def storage_benchmark():
         def record(group, test, metric, value, rows=None):
             out.append((dag_run.run_id, run_at, dbms, group, test, metric, value, rows))
 
-        # PostgreSQL loads into the bench schema so its ODS stays intact; the others
-        # hold nothing but this copy, so they load straight into their ods tables.
-        load_schema = "bench" if dbms == "postgres" else "ods"
+        # ClickHouse loads into the bench database so its ODS stays intact; the archived
+        # DBMS hold nothing but this copy, so they load straight into their ods tables.
+        load_schema = "bench" if dbms == "clickhouse" else "ods"
         with targets.connect(dbms) as db, tempfile.TemporaryDirectory() as tmp:
             for name, info in exported.items():
                 path = os.path.join(tmp, f"{name}.csv")
@@ -97,10 +99,8 @@ def storage_benchmark():
     @task
     def render_report(exported: dict, dag_run=None) -> list[str]:
         results = meta.benchmark_results(dag_run.run_id)
-        with targets.connect("postgres") as pg:
-            raw = dict(pg.query("SELECT source, sum(bytes) FROM meta.raw_files GROUP BY source"))
         extra = {"csv_bytes": {k: v["bytes"] for k, v in exported.items()},
-                 "raw_bytes": {k: int(v) for k, v in raw.items()}}
+                 "raw_bytes": meta.raw_bytes_by_source()}
         files = report.render(dag_run.run_id, results, extra,
                               os.path.join(config.REPORTS_DIR, "lr1"))
         log.info("Report files: %s", files)

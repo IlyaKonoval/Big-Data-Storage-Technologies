@@ -1,13 +1,13 @@
 """The three storages compared in ЛР1 behind one small interface.
 
-PostgreSQL is the main ODS: ingestion DAGs append snapshots with `PostgresTarget.load`.
-For the comparison all three load the same CSV export of ODS with their native bulk
-path (PostgreSQL COPY, MySQL LOAD DATA, ClickHouse CSVWithNames insert).
+ClickHouse is the main storage (ODS, meta, Data Vault): ingestion DAGs append snapshots
+with `ClickHouseTarget.load`. PostgreSQL and MySQL are archived (compose profile
+`archive`) and only take part in storage_benchmark. For the comparison all three load the
+same CSV export of ODS with their native bulk path (PostgreSQL COPY, MySQL LOAD DATA,
+ClickHouse CSVWithNames insert).
 
 CSV convention (produced by export_csv): header row, comma, '"' quoting, NULL = \\N.
 """
-import csv
-import io
 from abc import ABC, abstractmethod
 
 import clickhouse_connect
@@ -59,25 +59,6 @@ class PostgresTarget(Target):
         self.conn = psycopg2.connect(
             host=s.host, port=s.port, dbname=s.database, user=s.user, password=s.password
         )
-
-    def load(self, table: str, columns: list[str], rows: list[tuple], load_id: str) -> int:
-        """Append one snapshot to ods.<table>; re-running the same load_id replaces it."""
-        buf = io.StringIO()
-        csv.writer(buf).writerows(rows)  # None -> empty unquoted field -> NULL
-        buf.seek(0)
-        with self.conn, self.conn.cursor() as cur:  # one transaction
-            cur.execute(f"DELETE FROM ods.{table} WHERE load_id = %s", (load_id,))
-            cur.copy_expert(
-                f"COPY ods.{table} ({', '.join(columns)}) FROM STDIN WITH (FORMAT csv)", buf
-            )
-        return len(rows)
-
-    def export_csv(self, table: str, columns: list[str], path: str) -> None:
-        sql = (f"COPY (SELECT {', '.join(columns)} FROM ods.{table}) TO STDOUT "
-               r"WITH (FORMAT csv, HEADER true, NULL '\N')")
-        with open(path, "w", encoding="utf-8", newline="") as f, self.conn.cursor() as cur:
-            cur.copy_expert(sql, f)
-        self.conn.rollback()
 
     def load_csv(self, schema, table, columns, path):
         sql = (f"COPY {schema}.{table} ({', '.join(columns)}) FROM STDIN "
@@ -167,6 +148,23 @@ class ClickHouseTarget(Target):
             host=s.host, port=s.port, username=s.user, password=s.password, database=s.database,
             send_receive_timeout=900,
         )
+
+    def load(self, table: str, columns: list[str], rows: list[tuple], load_id: str) -> int:
+        """Append one snapshot to ods.<table>; re-running the same load_id replaces it.
+
+        A single INSERT block is atomic in MergeTree, so the snapshot is either fully
+        visible or absent; the lightweight DELETE removes a previous attempt.
+        """
+        self.client.command(f"DELETE FROM ods.{table} WHERE load_id = {{load_id:String}}",
+                            parameters={"load_id": load_id})
+        self.client.insert(f"ods.{table}", rows, column_names=columns)
+        return len(rows)
+
+    def export_csv(self, table: str, columns: list[str], path: str) -> None:
+        """Write ods.<table> in the shared CSV convention (header, NULL = \\N)."""
+        sql = f"SELECT {', '.join(columns)} FROM ods.{table} FORMAT CSVWithNames"
+        with open(path, "wb") as f:
+            f.write(self.client.raw_query(sql))
 
     def load_csv(self, schema, table, columns, path):
         self.client.command(f"TRUNCATE TABLE {schema}.{table}")

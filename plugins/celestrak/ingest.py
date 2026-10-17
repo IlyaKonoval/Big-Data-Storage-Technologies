@@ -1,12 +1,12 @@
-"""Factory for the ingestion DAGs: CelesTrak -> S3 raw file -> ODS in PostgreSQL.
+"""Factory for the ingestion DAGs: CelesTrak -> S3 raw file -> ODS in ClickHouse.
 
     extract ── load_ods ── validate  (outlet: Asset ods_<source>)
 
 extract downloads the dataset once, skips the run when CelesTrak answers 403 or the
 file is byte-identical to the last loaded one, and stores the file in SeaweedFS.
 load_ods parses the file from S3 into typed rows and appends a snapshot to ods.<source>.
-MySQL and ClickHouse are filled from ODS exports by the storage_benchmark DAG, so the
-regular ingestion only needs PostgreSQL running.
+PostgreSQL and MySQL are archived: storage_benchmark fills them from ODS exports when the
+`archive` compose profile is up, the regular ingestion only needs ClickHouse.
 """
 import hashlib
 import logging
@@ -17,6 +17,7 @@ from airflow.exceptions import AirflowFailException, AirflowSkipException
 from airflow.sdk import Asset, dag, task
 
 from celestrak import client, meta, parsing, s3, targets
+from celestrak.assets import asset
 from celestrak.sources import Source
 
 log = logging.getLogger(__name__)
@@ -25,8 +26,8 @@ CONTENT_TYPES = {"csv": "text/csv", "json": "application/json"}
 
 
 def ods_asset(source_name: str) -> Asset:
-    """Asset updated when a fresh snapshot of the source is in ODS (used by DDS DAGs)."""
-    return Asset(name=f"ods_{source_name}", uri=f"celestrak://ods/{source_name}")
+    """Asset updated when a fresh snapshot of the source is in ODS (schedules vault DAGs)."""
+    return asset("ods", source_name)
 
 
 def build_ingest_dag(source: Source, schedule: str, doc_md: str):
@@ -74,21 +75,21 @@ def build_ingest_dag(source: Source, schedule: str, doc_md: str):
             })
             started = time.perf_counter()
             try:
-                with targets.connect("postgres") as target:
+                with targets.connect("clickhouse") as target:
                     n = target.load(source.table, source.ods_columns, rows, raw["load_id"])
             except Exception as exc:
-                meta.log_load(raw["load_id"], source.name, "postgres", None,
+                meta.log_load(raw["load_id"], source.name, "clickhouse", None,
                               time.perf_counter() - started, "failed", str(exc)[:1000])
                 raise
             duration = time.perf_counter() - started
-            meta.log_load(raw["load_id"], source.name, "postgres", n, duration, "success")
+            meta.log_load(raw["load_id"], source.name, "clickhouse", n, duration, "success")
             log.info("%d rows into ods.%s in %.2fs", n, source.table, duration)
             return {"rows": n, "seconds": round(duration, 3)}
 
         @task(outlets=[ods_asset(source.name)])
         def validate(raw: dict, result: dict) -> int:
             """The snapshot in ODS must be complete: row count equals rows parsed from the file."""
-            with targets.connect("postgres") as target:
+            with targets.connect("clickhouse") as target:
                 in_db = target.count(source.table, raw["load_id"])
             if in_db == 0 or in_db != result["rows"]:
                 raise AirflowFailException(
