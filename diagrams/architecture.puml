@@ -1,0 +1,83 @@
+@startuml architecture
+' Architecture of the CelesTrak data platform (docker-compose), state on 17.10.2026.
+' Solid arrows = data flow, dashed = Airflow Asset events (data-aware scheduling),
+' grey = planned components (ЛР3).
+
+!theme plain
+skinparam defaultFontName Arial
+skinparam nodesep 35
+skinparam ranksep 45
+skinparam ArrowColor #444444
+skinparam rectangle {
+  BorderColor #555555
+}
+
+cloud "CelesTrak API (celestrak.org)\nSATCAT · GP · SupGP · SOCRATES" as api #F2F2F2
+
+rectangle "Apache Airflow 3.0.6 · LocalExecutor · :8080" as airflow #DCE8FA {
+
+  rectangle "ЛР1 · загрузка по cron\nextract → load_ods → validate" as lr1 #FFFFFF {
+    rectangle "ingest_satcat\n03:00" as d_satcat
+    rectangle "ingest_gp\nкаждые 4 ч" as d_gp
+    rectangle "ingest_supgp\nкаждые 8 ч" as d_supgp
+    rectangle "ingest_socrates\nкаждые 12 ч" as d_socrates
+  }
+
+  rectangle "ЛР2 · Data Vault по Assets" as lr2 #FFFFFF {
+    rectangle "vault_satcat" as v_satcat
+    rectangle "vault_orbit" as v_orbit
+    rectangle "vault_conjunction" as v_conj
+    rectangle "vault_business" as v_business
+    rectangle "data_quality" as v_dq
+  }
+}
+
+database "airflow-postgres\nметаданные Airflow" as af_db #EEEEEE
+
+storage "SeaweedFS · S3 :8333\nraw/<source>/dt=YYYY-MM-DD/" as s3 #FFF4C2
+
+rectangle "ClickHouse 24.8 · :8123 — основное хранилище" as ch #D8F0DF {
+  rectangle "ods\nснимки" as ch_ods #FFFFFF
+  rectangle "stage\nочистка, ключи" as ch_stage #FFFFFF
+  rectangle "rv · Raw Vault\nhubs, links, satellites" as ch_rv #FFFFFF
+  rectangle "bv · Business Vault\nderived, PIT, SCD2" as ch_bv #FFFFFF
+  rectangle "meta\nжурналы, dq_results" as ch_meta #FFFFFF
+}
+
+rectangle "ЛР3 · план" as lr3 #F7F7F7 {
+  rectangle "mart.*" as marts #FFFFFF
+  rectangle "Superset" as superset #FFFFFF
+  rectangle "OpenMetadata" as om #FFFFFF
+}
+
+' --- ingestion -------------------------------------------------------------------
+api --> lr1 : HTTP, 1 запрос на запуск\n403 → skipped
+
+' --- Asset events (inside Airflow) -------------------------------------------------
+d_satcat ..> v_satcat : ods_satcat
+d_gp ..> v_orbit : ods_gp
+d_supgp ..> v_orbit : ods_supgp
+d_socrates ..> v_conj : ods_socrates
+v_satcat ..> v_business
+v_orbit ..> v_business
+v_conj ..> v_business
+v_business ..> v_dq : vault_business
+
+' --- data flow ---------------------------------------------------------------------
+lr1 --> s3 : сырой файл
+lr1 --> ch_ods : разбор, INSERT
+ch_ods -right-> ch_stage
+ch_stage -right-> ch_rv
+ch_rv -right-> ch_bv
+ch_bv -[hidden]right- ch_meta
+s3 -[hidden]down- ch_ods
+lr2 --> ch : SQL из sql/vault/:\nstage → rv → bv
+v_dq --> ch_meta : проверки
+airflow -left-> af_db
+
+' --- ЛР3 (planned) ---------------------------------------------------------------
+ch_bv -[#999999,dashed]-> marts
+marts -[#999999,dashed]right-> superset
+ch -[#999999,dashed]-> om : lineage
+
+@enduml

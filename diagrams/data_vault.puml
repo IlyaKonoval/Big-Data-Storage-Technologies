@@ -1,0 +1,249 @@
+@startuml data_vault
+' Data Vault 2.0 model of the CelesTrak DDS (ClickHouse, databases rv and bv).
+' Colors follow the usual DV notation: hubs blue, links red, satellites yellow,
+' business vault green (views light green), reference tables grey.
+
+!theme plain
+hide circle
+hide methods
+skinparam linetype ortho
+skinparam nodesep 60
+skinparam ranksep 70
+skinparam defaultFontName Arial
+skinparam class {
+  BorderColor #555555
+  ArrowColor #555555
+}
+
+!define HUB(name) class name <<hub>> #DCE8FA
+!define LINK(name) class name <<link>> #F9D9D9
+!define SAT(name) class name <<satellite>> #FFF4C2
+!define BV(name) class name <<business vault>> #D8F0DF
+!define REF(name) class name <<reference>> #EEEEEE
+!define VIEW(name) class name <<view>> #EEF8F0
+
+package "rv — Raw Vault" {
+
+  HUB(hub_object) {
+    **hk_object** : String  <<PK>>
+    norad_cat_id : UInt32  <<BK>>
+    load_dts : DateTime64
+    record_source : String
+  }
+
+  HUB(hub_launch) {
+    **hk_launch** : String  <<PK>>
+    launch_designator : String  <<BK>>
+    load_dts : DateTime64
+    record_source : String
+  }
+
+  LINK(link_object_launch) {
+    **hk_object_launch** : String  <<PK>>
+    hk_object : String  <<FK>>
+    hk_launch : String  <<FK>>
+    load_dts : DateTime64
+    record_source : String
+  }
+
+  LINK(link_conjunction) {
+    **hk_conjunction** : String  <<PK>>
+    hk_object_1 : String  <<FK>>
+    hk_object_2 : String  <<FK>>
+    load_dts : DateTime64
+    record_source : String
+  }
+
+  SAT(sat_object_satcat_desc) {
+    **hk_object** : String  <<PK, FK>>
+    **load_dts** : DateTime64  <<PK>>
+    hashdiff : String
+    record_source : String
+    --
+    object_name
+    object_type
+    owner
+    orbit_center
+  }
+
+  SAT(sat_object_satcat_status) {
+    **hk_object** : String  <<PK, FK>>
+    **load_dts** : DateTime64  <<PK>>
+    hashdiff : String
+    record_source : String
+    --
+    ops_status_code
+    decay_date
+    data_status_code
+    orbit_type
+    rcs
+    period, inclination
+    apogee, perigee
+  }
+
+  SAT(sat_launch) {
+    **hk_launch** : String  <<PK, FK>>
+    **load_dts** : DateTime64  <<PK>>
+    hashdiff : String
+    record_source : String
+    --
+    launch_date
+    launch_site
+  }
+
+  SAT(sat_object_orbit_gp) {
+    **hk_object** : String  <<PK, FK>>
+    **load_dts** : DateTime64  <<PK>>
+    hashdiff : String
+    record_source : String
+    --
+    object_name, object_id
+    epoch
+    mean_motion, eccentricity
+    inclination, ra_of_asc_node
+    arg_of_pericenter, mean_anomaly
+    bstar, mean_motion_dot/ddot
+    element_set_no, rev_at_epoch
+  }
+
+  SAT(sat_object_orbit_supgp) {
+    **hk_object** : String  <<PK, FK>>
+    **load_dts** : DateTime64  <<PK>>
+    hashdiff : String
+    record_source : String
+    --
+    (OMM elements as in GP)
+    rms
+    data_source
+  }
+
+  SAT(sat_conjunction) {
+    **hk_conjunction** : String  <<PK, FK>>
+    **load_dts** : DateTime64  <<PK>>
+    **tca** : DateTime64  <<PK, dependent key>>
+    hashdiff : String
+    set_hashdiff : String
+    record_source : String
+    --
+    tca_range
+    tca_relative_speed
+    max_prob, dilution
+    dse_1, dse_2
+  }
+
+  SAT(sts_conjunction) {
+    **hk_conjunction** : String  <<PK, FK>>
+    **load_dts** : DateTime64  <<PK>>
+    status : I | D
+    record_source : String
+  }
+
+  REF(ref_ops_status) {
+    **code** : String  <<PK>>
+    description : String
+    is_active : Bool
+  }
+
+  REF(ref_object_type) {
+    **code** : String  <<PK>>
+    description : String
+  }
+}
+
+package "bv — Business Vault" {
+
+  BV(sat_object_orbit_derived) {
+    **hk_object** : String  <<PK, FK>>
+    **source** : gp | supgp  <<PK>>
+    **load_dts** : DateTime64  <<PK>>
+    --
+    epoch
+    period_min
+    semi_major_axis_km
+    perigee_km, apogee_km
+    orbit_regime : LEO|MEO|GEO|HEO
+  }
+
+  BV(pit_object) {
+    **snapshot_date** : Date  <<PK>>
+    **hk_object** : String  <<PK, FK>>
+    --
+    desc_ldts
+    status_ldts
+    gp_ldts
+    supgp_ldts
+    built_at
+  }
+
+  VIEW(conjunction_current) {
+    norad_cat_id_1, norad_cat_id_2
+    tca, tca_range
+    tca_relative_speed
+    max_prob, dilution, dse_1, dse_2
+    --
+    latest set of each pair
+    whose last status = 'I'
+  }
+
+  VIEW(object_desc_history) {
+    norad_cat_id  (hub_object)
+    object_name, object_type
+    owner, orbit_center
+    --
+    valid_from = load_dts
+    valid_to = next load_dts
+    is_current = valid_to IS NULL
+  }
+
+  VIEW(object_status_history) {
+    norad_cat_id  (hub_object)
+    ops_status_code
+    ops_status, is_active  (ref_ops_status)
+    decay_date, rcs, ...
+    --
+    valid_from = load_dts
+    valid_to = next load_dts
+    is_current = valid_to IS NULL
+  }
+}
+
+' hubs <-> links
+hub_object "1" -- "0..*" link_object_launch
+hub_launch "1" -- "0..*" link_object_launch
+hub_object "1" -- "0..*" link_conjunction : object 1
+hub_object "1" -- "0..*" link_conjunction : object 2
+
+' satellites (one per source system / rate of change)
+hub_object "1" -- "0..*" sat_object_satcat_desc : SATCAT
+hub_object "1" -- "0..*" sat_object_satcat_status : SATCAT
+hub_object "1" -- "0..*" sat_object_orbit_gp : GP
+hub_object "1" -- "0..*" sat_object_orbit_supgp : SupGP
+hub_launch "1" -- "0..*" sat_launch : SATCAT
+link_conjunction "1" -- "0..*" sat_conjunction : SOCRATES
+link_conjunction "1" -- "0..*" sts_conjunction : SOCRATES
+
+' code lists
+sat_object_satcat_status ..> ref_ops_status : ops_status_code
+sat_object_satcat_desc ..> ref_object_type : object_type
+
+' business vault
+sat_object_orbit_gp ..> sat_object_orbit_derived : computed
+sat_object_orbit_supgp ..> sat_object_orbit_derived : computed
+hub_object "1" -- "0..*" pit_object
+
+' SCD2 / current-state views
+sat_object_satcat_desc ..> object_desc_history : SCD2
+sat_object_satcat_status ..> object_status_history : SCD2
+sat_conjunction ..> conjunction_current : latest set
+sts_conjunction ..> conjunction_current : last status I
+link_conjunction ..> conjunction_current : NORAD pair
+
+note bottom of pit_object
+  each ..._ldts = load_dts of the satellite version
+  valid at the end of snapshot_date:
+  desc → sat_object_satcat_desc
+  status → sat_object_satcat_status
+  gp / supgp → sat_object_orbit_gp / _supgp
+end note
+
+@enduml
