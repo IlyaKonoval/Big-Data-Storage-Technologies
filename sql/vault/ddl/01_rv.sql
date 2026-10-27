@@ -239,3 +239,58 @@ SELECT * FROM values('code String, description String',
     ('DEB', 'Debris'),
     ('UNK', 'Unknown'))
 WHERE code NOT IN (SELECT code FROM rv.ref_object_type);
+
+-- Launch sites of SATCAT (code -> name, coordinates). Coordinates are approximate (pad
+-- complex or, for sea and air launches, the usual launch area); used by the marts.
+CREATE TABLE IF NOT EXISTS rv.ref_launch_site
+(
+    code       String,
+    name       String,
+    country    String,
+    latitude   Float64,
+    longitude  Float64
+)
+ENGINE = ReplacingMergeTree
+ORDER BY code;
+
+INSERT INTO rv.ref_launch_site
+SELECT * FROM values('code String, name String, country String, latitude Float64, longitude Float64',
+    ('AFETR', 'Cape Canaveral / Kennedy', 'USA', 28.49, -80.58),
+    ('AFWTR', 'Vandenberg', 'USA', 34.74, -120.57),
+    ('ANDSP', 'Andoya', 'Norway', 69.29, 16.02),
+    ('CAS', 'Canary Islands (air launch)', 'Spain', 28.00, -15.00),
+    ('DLS', 'Dombarovsky', 'Russia', 51.09, 59.84),
+    ('ERAS', 'Eastern Range (air launch)', 'USA', 28.00, -79.00),
+    ('FRGUI', 'Kourou', 'France', 5.24, -52.77),
+    ('HGSTR', 'Hammaguir', 'Algeria', 30.88, -3.04),
+    ('JJSLA', 'Jeju sea launch area', 'South Korea', 33.20, 126.50),
+    ('JSC', 'Jiuquan', 'China', 40.96, 100.29),
+    ('KODAK', 'Kodiak', 'USA', 57.43, -152.34),
+    ('KSCUT', 'Uchinoura', 'Japan', 31.25, 131.08),
+    ('KWAJ', 'Kwajalein', 'Marshall Islands', 9.05, 167.74),
+    ('KYMSC', 'Kapustin Yar', 'Russia', 48.57, 46.25),
+    ('NSC', 'Naro', 'South Korea', 34.43, 127.53),
+    ('PLMSC', 'Plesetsk', 'Russia', 62.93, 40.58),
+    ('RLLB', 'Rocket Lab LC-1 Mahia', 'New Zealand', -39.26, 177.86),
+    ('SCSLA', 'South China Sea launch area', 'China', 21.00, 112.00),
+    ('SEAL', 'Sea Launch (Pacific)', 'International', 0.00, -154.00),
+    ('SEMLS', 'Semnan', 'Iran', 35.23, 53.92),
+    ('SMTS', 'Shahroud', 'Iran', 36.20, 55.33),
+    ('SNMLP', 'San Marco platform', 'Italy', -2.94, 40.21),
+    ('SRILR', 'Sriharikota', 'India', 13.72, 80.23),
+    ('STARB', 'Starbase', 'USA', 25.99, -97.15),
+    ('SUBL', 'Submarine launch (Barents Sea)', 'Russia', 69.00, 35.00),
+    ('SVOBO', 'Svobodny', 'Russia', 51.84, 128.28),
+    ('TAISC', 'Taiyuan', 'China', 38.85, 111.61),
+    ('TANSC', 'Tanegashima', 'Japan', 30.40, 130.97),
+    ('TYMSC', 'Baikonur', 'Kazakhstan', 45.92, 63.34),
+    ('VOSTO', 'Vostochny', 'Russia', 51.88, 128.33),
+    ('WLPIS', 'Wallops Island', 'USA', 37.94, -75.47),
+    ('WOMRA', 'Woomera', 'Australia', -30.94, 136.52),
+    ('WRAS', 'Western Range (air launch)', 'USA', 36.00, -122.00),
+    ('WSC', 'Wenchang', 'China', 19.61, 110.95),
+    ('XICLF', 'Xichang', 'China', 28.25, 102.03),
+    ('YAVNE', 'Palmachim', 'Israel', 31.88, 34.68),
+    ('YSLA', 'Yellow Sea launch area', 'China', 34.90, 121.20),
+    ('YUN', 'Sohae', 'North Korea', 39.66, 124.71))
+WHERE code NOT IN (SELECT code FROM rv.ref_launch_site);

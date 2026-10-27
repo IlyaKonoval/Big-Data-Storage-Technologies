@@ -1,6 +1,6 @@
 -- check: duplicate_keys
 -- severity: warning
--- description: Rows with the same key not yet collapsed by ReplacingMergeTree (parallel loads); readers use FINAL
+-- description: Строки с одинаковым ключом, ещё не схлопнутые ReplacingMergeTree (параллельные загрузки); читатели используют FINAL
 SELECT 'hub_object' AS tbl, hk_object AS k, count() AS n
 FROM rv.hub_object GROUP BY hk_object HAVING n > 1
 UNION ALL

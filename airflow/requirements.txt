@@ -1,3 +1,4 @@
 clickhouse-connect==0.8.18
 PyMySQL==1.1.1
 matplotlib==3.9.4
+sgp4==2.24

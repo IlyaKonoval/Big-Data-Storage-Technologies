@@ -1,0 +1,371 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Орбитальный глобус</title>
+  <!-- Data: mart.orbit_elements / mart.conjunction_risk via the read-only /ch/ proxy.
+       Positions are propagated in the browser with SGP4 (satellite.js) from the TLE
+       exported by build_marts, so the globe shows the satellites at the current moment.
+       Layers, loaded on first use: mart.launch_sites (3D columns), mart.launch_arcs (arcs),
+       mart.ground_tracks (which orbits to draw), mart.conjunction_geo (3D hexagons). -->
+  <script src="https://cdn.jsdelivr.net/npm/globe.gl@2.45.3/dist/globe.gl.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/satellite.js@5.0.0/dist/satellite.min.js"></script>
+  <script src="common.js"></script>
+  <style>
+    :root {
+      --bg: #02040a;
+      --panel: rgba(10, 16, 30, 0.78);
+      --border: rgba(120, 160, 255, 0.18);
+      --text: #e6ecff;
+      --muted: #8a96b8;
+      --leo: #38bdf8;
+      --meo: #facc15;
+      --geo: #f87171;
+      --heo: #c084fc;
+      --starlink: #e2e8f0;
+      --risk: #ff3b3b;
+      --site: #fb923c;
+      --conj: #fde047;
+      --track: #34d399;
+    }
+    html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+                 font: 13px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; overflow: hidden; }
+    #globe { position: absolute; inset: 0; }
+    .panel { position: absolute; background: var(--panel); border: 1px solid var(--border);
+             border-radius: 10px; padding: 12px 14px; backdrop-filter: blur(6px); }
+    #info { top: 14px; left: 14px; max-width: 360px; }
+    h1 { margin: 0 0 2px; font-size: 16px; font-weight: 600; letter-spacing: .2px; }
+    .sub { color: var(--muted); font-size: 12px; margin-bottom: 10px; }
+    .stats { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px 14px; margin: 8px 0 10px; }
+    .stat b { display: block; font-size: 18px; font-variant-numeric: tabular-nums; }
+    .stat span { color: var(--muted); font-size: 11px; }
+    .group { color: var(--muted); font-size: 11px; margin: 10px 0 0; text-transform: uppercase;
+             letter-spacing: .6px; }
+    .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+    button { all: unset; cursor: pointer; padding: 4px 9px; border-radius: 999px; font-size: 12px;
+             border: 1px solid var(--border); color: var(--text); background: rgba(255,255,255,.03); }
+    button:hover { background: rgba(255,255,255,.08); }
+    button.on { background: rgba(120,160,255,.22); border-color: rgba(120,160,255,.6); }
+    .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 5px;
+           vertical-align: 0; }
+    #clock { bottom: 14px; right: 14px; font-variant-numeric: tabular-nums; text-align: right; }
+    #clock .speed { margin-top: 6px; }
+    #legend { bottom: 14px; left: 14px; font-size: 12px; }
+    #legend div { margin: 2px 0; }
+    .label { color: #fff; font-size: 11px; white-space: nowrap; transform: translate(8px, -50%);
+             text-shadow: 0 0 4px #000, 0 0 2px #000; pointer-events: none; }
+    .label.risk { color: #ffb4b4; }
+    .label.site { color: #fed7aa; font-weight: 600; }
+    .label.track { color: #a7f3d0; }
+    .tip { background: var(--panel); border: 1px solid var(--border); border-radius: 6px;
+           padding: 6px 8px; font: 12px/1.4 system-ui, sans-serif; color: var(--text); }
+    .tip b { color: #fff; }
+    #status { top: 50%; left: 50%; transform: translate(-50%, -50%); display: none; }
+    @media (max-width: 640px) { #info { max-width: calc(100% - 60px); } #legend { display: none; } }
+  </style>
+</head>
+<body>
+  <div id="globe"></div>
+
+  <div id="info" class="panel">
+    <h1>Околоземное пространство</h1>
+    <div class="sub" id="sub">загрузка элементов орбит…</div>
+    <div class="stats">
+      <div class="stat"><b id="n-all">—</b><span>спутников с элементами GP</span></div>
+      <div class="stat"><b id="n-starlink">—</b><span>из них Starlink</span></div>
+      <div class="stat"><b id="n-geo">—</b><span>на геостационаре</span></div>
+      <div class="stat"><b id="n-risk">—</b><span>объектов в опасных парах</span></div>
+    </div>
+    <div class="chips" id="filters">
+      <button data-f="all" class="on">Все</button>
+      <button data-f="LEO"><span class="dot" style="background:var(--leo)"></span>LEO</button>
+      <button data-f="MEO"><span class="dot" style="background:var(--meo)"></span>MEO</button>
+      <button data-f="GEO"><span class="dot" style="background:var(--geo)"></span>GEO</button>
+      <button data-f="HEO"><span class="dot" style="background:var(--heo)"></span>HEO</button>
+      <button data-f="starlink"><span class="dot" style="background:var(--starlink)"></span>Starlink</button>
+      <button data-f="risk"><span class="dot" style="background:var(--risk)"></span>Опасные пары</button>
+    </div>
+    <div class="group">Слои</div>
+    <div class="chips" id="layers">
+      <button data-l="sites"><span class="dot" style="background:var(--site)"></span>Космодромы</button>
+      <button data-l="arcs"><span class="dot" style="background:var(--geo)"></span>Космодромы → GEO</button>
+      <button data-l="tracks"><span class="dot" style="background:var(--track)"></span>Витки МКС, Тяньгуна, Хаббла, Starlink</button>
+      <button data-l="conj"><span class="dot" style="background:var(--conj)"></span>Где сближения</button>
+    </div>
+  </div>
+
+  <div id="legend" class="panel">
+    <div><span class="dot" style="background:var(--leo)"></span>LEO — до 2 000 км</div>
+    <div><span class="dot" style="background:var(--meo)"></span>MEO — навигация (GPS, ГЛОНАСС)</div>
+    <div><span class="dot" style="background:var(--geo)"></span>GEO — 35 786 км, кольцо над экватором</div>
+    <div><span class="dot" style="background:var(--heo)"></span>HEO — вытянутые орбиты</div>
+    <div data-l="sites" hidden><span class="dot" style="background:var(--site)"></span>столбец — число запусков с космодрома</div>
+    <div data-l="arcs" hidden><span class="dot" style="background:var(--site)"></span>дуга — космодром → позиция его спутников на GEO; толщина — их число</div>
+    <div data-l="tracks" hidden><span class="dot" style="background:var(--track)"></span>следующий виток на реальной высоте (SGP4)</div>
+    <div data-l="conj" hidden><span class="dot" style="background:var(--conj)"></span>гексагон — значимые сближения (P ≥ 1e-4) над этим местом</div>
+  </div>
+
+  <div id="clock" class="panel">
+    <div id="time">—</div>
+    <div class="chips speed" id="speeds">
+      <button data-s="1" class="on">×1</button>
+      <button data-s="60">×60</button>
+      <button data-s="600">×600</button>
+    </div>
+  </div>
+
+  <div id="status" class="panel"></div>
+
+  <script>
+    const COLORS = { LEO: '#38bdf8', MEO: '#facc15', GEO: '#f87171', HEO: '#c084fc',
+                     unknown: '#94a3b8', starlink: '#e2e8f0', risk: '#ff3b3b' };
+    const FEATURED = { 25544: 'МКС', 48274: 'Тяньгун', 20580: 'Хаббл' };
+    const POV = { all: 3.2, LEO: 2.6, MEO: 9, GEO: 14, HEO: 14, starlink: 2.4, risk: 2.6 };
+
+    const world = makeGlobe(document.getElementById('globe'))
+      .particleLat('lat').particleLng('lng').particleAltitude('alt')
+      .particlesColor(set => set.color).particlesSize(set => set.size)
+      .htmlLat('lat').htmlLng('lng').htmlAltitude('alt')
+      .htmlElement(d => {
+        const el = document.createElement('div');
+        el.className = 'label' + (d.kind ? ' ' + d.kind : '');
+        el.textContent = d.text;
+        return el;
+      })
+      // Launch sites: a column per site, height by the number of launches.
+      .pointLat('lat').pointLng('lng').pointAltitude('alt').pointRadius(0.55)
+      .pointColor(() => '#fb923c').pointResolution(16)
+      .pointLabel(d => tip(`<b>${d.name}</b> · ${d.country}<br>${fmt(d.launches)} запусков,
+                            ${d.first}–${d.last}<br>${fmt(d.inOrbit)} объектов ещё на орбите`))
+      // Launch arcs: site -> the GEO slot of its satellites.
+      .arcStartLat('slat').arcStartLng('slng').arcEndLat('lat').arcEndLng('lng')
+      .arcColor(d => ['rgba(251,146,60,0.85)', COLORS[d.regime] || COLORS.unknown])
+      .arcStroke(d => 0.12 + 0.12 * Math.sqrt(d.n)).arcAltitudeAutoScale(0.35)
+      .arcDashLength(0.5).arcDashGap(0.12).arcDashAnimateTime(4000)
+      .arcLabel(d => tip(`<b>${d.site} → ${d.regime}</b>: ${fmt(d.n)} спутн.<br>${d.names}${d.n > 3 ? '…' : ''}`))
+      // Next revolution of the featured objects, propagated here, at the real altitude.
+      .pathPoints('points').pathPointLat('lat').pathPointLng('lng').pathPointAlt('alt')
+      .pathColor(() => ['rgba(52,211,153,0.95)', 'rgba(52,211,153,0.08)'])
+      .pathStroke(2).pathTransitionDuration(0)
+      .pathLabel(d => tip(`<b>${d.name}</b><br>следующий виток, ~${fmt(d.km)} км`))
+      // Conjunctions: hexagons over the points of closest approach, height by count.
+      .hexBinPointLat('lat').hexBinPointLng('lng').hexBinPointWeight('n')
+      .hexBinResolution(1).hexMargin(0.08).hexTransitionDuration(600)
+      .hexAltitude(d => 0.005 + 0.35 * d.sumWeight / maxConj)
+      .hexTopColor(d => heat(d.sumWeight / maxConj)).hexSideColor(d => heat(d.sumWeight / maxConj, 0.6))
+      .hexLabel(d => tip(`<b>${fmt(d.sumWeight)}</b> значимых сближений (P ≥ 1e-4) за неделю<br>
+                          из них ближе 1 км: ${fmt(d.points.reduce((a, p) => a + p.near, 0))}`));
+    world.pointOfView({ lat: 25, lng: 30, altitude: POV.all });
+    world.controls().autoRotate = true;
+    world.controls().autoRotateSpeed = 0.35;
+
+    function heat(t, a = 0.9) {        // yellow -> red, t = share of the busiest cell
+      t = Math.min(1, t);              // weak cells stay translucent so the Earth shows through
+      return `rgba(255, ${Math.round(230 - 190 * t)}, ${Math.round(70 - 50 * t)}, ${a * (0.2 + 0.8 * t)})`;
+    }
+
+    // Layers: SQL on first use, then the rows are kept.
+    const LAYER_SQL = {
+      sites: `SELECT name, country, latitude, longitude, launches, objects_in_orbit,
+                     first_year, last_year
+              FROM mart.launch_sites WHERE launches > 0 ORDER BY launches DESC`,
+      // Geostationary satellites: one arc per site and 15° sector of the GEO belt, as thick as
+      // the number of satellites there.
+      arcs: `SELECT site_name, orbit_regime, any(site_latitude), any(site_longitude),
+                    avg(latitude), avg(longitude), count(), arrayStringConcat(groupArray(3)(object_name), ', ')
+             FROM mart.launch_arcs WHERE orbit_regime = 'GEO'
+             GROUP BY site_name, orbit_regime, round(longitude / 15)`,
+      tracks: `SELECT track_group, min(norad_cat_id), round(avg(mean_altitude_km))
+               FROM mart.ground_tracks GROUP BY track_group`,
+      // Significant conjunctions (P >= 1e-4) counted per H3 cell of resolution 1, the same
+      // grid the hexagon layer uses, so each hexagon gets exactly one weighted point.
+      conj: `SELECT tupleElement(c, 2), tupleElement(c, 1), n, near FROM (
+               SELECT h3ToGeo(geoToH3(toFloat64(longitude), toFloat64(latitude), 1)) AS c,
+                      count() AS n, countIf(tca_range_km < 1) AS near
+               FROM mart.conjunction_geo WHERE max_prob >= 1e-4 GROUP BY c HAVING n >= 3)`,
+    };
+    let maxConj = 1;
+    const layers = new Set(), layerRows = {};
+    let siteLabels = [], tracks = [], lastTracks = -Infinity;
+
+    async function toggleLayer(key, on) {
+      if (on) layers.add(key); else layers.delete(key);
+      document.querySelectorAll(`#legend [data-l="${key}"]`).forEach(el => { el.hidden = !on; });
+      if (on && !layerRows[key]) {
+        setStatus('Загрузка слоя…');
+        try { layerRows[key] = await ch(LAYER_SQL[key]); }
+        catch (e) { setStatus('Не удалось загрузить слой: ' + e.message.slice(0, 200)); return; }
+        setStatus('');
+      }
+      applyLayers();
+    }
+
+    function applyLayers() {
+      const rows = k => (layers.has(k) && layerRows[k]) || [];
+      const sites = rows('sites');
+      const top = Math.max(1, ...sites.map(r => +r[4]));
+      const points = sites.map(([name, country, lat, lng, n, inOrbit, first, last]) => ({
+        name, country, lat: +lat, lng: +lng, launches: +n, inOrbit: +inOrbit, first, last,
+        alt: 0.01 + 0.4 * Math.sqrt(+n / top) }));
+      world.pointsData(points);
+      siteLabels = points.slice(0, 6).map(p => ({ lat: p.lat, lng: p.lng, alt: p.alt + 0.01,
+                                                   text: `${p.name} · ${fmt(p.launches)}`, kind: 'site' }));
+      world.arcsData(rows('arcs').map(([site, regime, slat, slng, lat, lng, n, names]) => ({
+        site, regime, slat: +slat, slng: +slng, lat: +lat, lng: +lng, n: +n, names })));
+      const conj = rows('conj').map(([lat, lng, n, near]) => ({ lat: +lat, lng: +lng, n: +n, near: +near }));
+      maxConj = Math.max(1, ...conj.map(c => c.n));
+      world.hexBinPointsData(conj);
+      tracks = rows('tracks').map(([name, norad, km]) => ({ name, norad: +norad, km: +km }));
+      if (!tracks.length) world.pathsData([]);
+      lastTracks = -Infinity;
+      lastPropagation = 0;
+    }
+
+    // The next ~95 minutes of each featured orbit, one point a minute (Earth-fixed frame).
+    function updateTracks(date) {
+      const paths = [];
+      for (const t of tracks) {
+        const s = sats.find(x => x.norad === t.norad);
+        if (!s) continue;
+        const points = [];
+        for (let m = 0; m <= 95; m++) {
+          const d = new Date(date.getTime() + m * 60000);
+          const pv = satellite.propagate(s.satrec, d);
+          if (!pv || !pv.position) continue;
+          const g = satellite.eciToGeodetic(pv.position, satellite.gstime(d));
+          points.push({ lat: satellite.degreesLat(g.latitude), lng: satellite.degreesLong(g.longitude),
+                        alt: g.height / EARTH_KM });
+        }
+        paths.push({ ...t, points });
+      }
+      world.pathsData(paths);
+    }
+
+    let sats = [], filter = 'all', speed = 1, simTime = Date.now(), lastReal = performance.now();
+    let lastPropagation = 0;
+
+    function visible(s) {
+      if (filter === 'all') return true;
+      if (filter === 'starlink') return s.starlink;
+      if (filter === 'risk') return s.risk;
+      return s.regime === filter;
+    }
+
+    function propagate(date) {
+      const gmst = satellite.gstime(date);
+      for (const s of sats) {
+        if (!visible(s) && !s.featured) { s.lat = NaN; continue; }
+        const pv = satellite.propagate(s.satrec, date);
+        if (!pv || !pv.position) { s.lat = NaN; continue; }
+        const g = satellite.eciToGeodetic(pv.position, gmst);
+        s.lat = satellite.degreesLat(g.latitude);
+        s.lng = satellite.degreesLong(g.longitude);
+        s.alt = g.height / EARTH_KM;
+      }
+    }
+
+    function render() {
+      const groups = {};
+      for (const s of sats) {
+        if (isNaN(s.lat) || !visible(s)) continue;
+        const key = filter === 'risk' ? 'risk' : (s.starlink && filter === 'starlink' ? 'starlink' : s.regime);
+        (groups[key] = groups[key] || []).push(s);
+      }
+      const sets = Object.entries(groups).map(([key, arr]) => {
+        arr.color = COLORS[key] || COLORS.unknown;
+        arr.size = key === 'risk' ? 2.6 : key === 'GEO' || key === 'MEO' ? 1.6 : 0.9;
+        return arr;
+      });
+      world.particlesData(sets);
+      const labels = sats.filter(s => !isNaN(s.lat) && (s.featured || (filter === 'risk' && s.riskLabel)))
+        .map(s => ({ lat: s.lat, lng: s.lng, alt: s.alt,
+                     text: s.featured ? FEATURED[s.norad] : s.riskLabel, kind: s.featured ? '' : 'risk' }));
+      const trackHeads = world.pathsData().filter(p => !FEATURED[p.norad] && p.points.length)
+        .map(p => ({ ...p.points[0], text: p.name, kind: 'track' }));
+      world.htmlElementsData([...labels, ...siteLabels, ...trackHeads]);
+    }
+
+    function tick(now) {
+      requestAnimationFrame(tick);
+      simTime += (now - lastReal) * speed;
+      lastReal = now;
+      if (now - lastPropagation > (speed > 1 ? 120 : 1000) && sats.length) {
+        lastPropagation = now;
+        const date = new Date(simTime);
+        if (tracks.length && Math.abs(simTime - lastTracks) > 30000) {
+          lastTracks = simTime;
+          updateTracks(date);
+        }
+        propagate(date);
+        render();
+        document.getElementById('time').textContent =
+          date.toISOString().replace('T', ' ').slice(0, 19) + ' UTC' + (speed > 1 ? `  ·  ×${speed}` : '');
+      }
+    }
+
+    function bind(id, attr, onPick) {
+      document.getElementById(id).addEventListener('click', e => {
+        const b = e.target.closest('button');
+        if (!b) return;
+        document.querySelectorAll(`#${id} button`).forEach(x => x.classList.toggle('on', x === b));
+        onPick(b.dataset[attr]);
+        lastPropagation = 0;
+      });
+    }
+    bind('filters', 'f', f => {
+      filter = f;
+      world.pointOfView({ altitude: POV[f] }, 1200);
+      world.controls().autoRotate = f !== 'risk';
+    });
+    bind('speeds', 's', s => { speed = +s; });
+    document.getElementById('layers').addEventListener('click', e => {
+      const b = e.target.closest('button');
+      if (!b) return;
+      b.classList.toggle('on');
+      toggleLayer(b.dataset.l, b.classList.contains('on'));
+    });
+
+    (async () => {
+      setStatus('Загрузка элементов орбит из ClickHouse…');
+      try {
+        const [elements, risky, built] = await Promise.all([
+          ch(`SELECT norad_cat_id, object_name, object_type, orbit_regime, is_starlink,
+                     tle_line1, tle_line2 FROM mart.orbit_elements`),
+          ch(`SELECT norad_cat_id_1, object_name_1, norad_cat_id_2, object_name_2, max_prob,
+                     toString(tca) FROM mart.conjunction_risk
+              WHERE norad_cat_id_1 IN (SELECT norad_cat_id FROM mart.orbit_elements)
+                AND norad_cat_id_2 IN (SELECT norad_cat_id FROM mart.orbit_elements)
+              ORDER BY max_prob DESC LIMIT 25`),
+          ch(`SELECT toString(quantileExact(0.5)(epoch)) FROM mart.orbit_elements`),
+        ]);
+        const riskLabel = new Map();
+        risky.forEach(([n1, name1, n2, name2, p, tca], i) => {
+          const text = `⚠ ${name1} × ${name2} · P=${(+p).toPrecision(2)} · ${tca.slice(5, 16)}`;
+          if (!riskLabel.has(+n1)) riskLabel.set(+n1, i < 6 ? text : '');
+          if (!riskLabel.has(+n2)) riskLabel.set(+n2, '');
+        });
+        sats = elements.map(([norad, name, type, regime, starlink, l1, l2]) => ({
+          norad: +norad, name, type, regime, starlink: !!+starlink,
+          satrec: satellite.twoline2satrec(l1, l2),
+          featured: !!FEATURED[+norad],
+          risk: riskLabel.has(+norad), riskLabel: riskLabel.get(+norad) || '',
+          lat: NaN, lng: 0, alt: 0,
+        }));
+        document.getElementById('n-all').textContent = sats.length.toLocaleString('ru');
+        document.getElementById('n-starlink').textContent =
+          sats.filter(s => s.starlink).length.toLocaleString('ru');
+        document.getElementById('n-geo').textContent =
+          sats.filter(s => s.regime === 'GEO').length.toLocaleString('ru');
+        document.getElementById('n-risk').textContent = riskLabel.size;
+        document.getElementById('sub').textContent =
+          `медианная эпоха GP ${built[0][0].slice(0, 16)} UTC · SGP4 в браузере · витрина mart.orbit_elements`;
+        setStatus('');
+        requestAnimationFrame(tick);
+      } catch (e) {
+        setStatus('Не удалось загрузить данные: ' + e.message.slice(0, 200));
+      }
+    })();
+  </script>
+</body>
+</html>

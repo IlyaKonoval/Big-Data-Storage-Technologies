@@ -1,6 +1,6 @@
 -- check: vault_matches_snapshot
 -- severity: critical
--- description: For every object of the last staged snapshot, the satellite version valid at that moment equals the snapshot (nothing lost or stale)
+-- description: Для каждого объекта последнего снимка версия сателлита, действующая на тот момент, совпадает со снимком (ничего не потеряно и не устарело)
 SELECT 'sat_object_satcat_desc' AS satellite, s.hk_object AS hk
 FROM stage.satcat AS s
 LEFT JOIN

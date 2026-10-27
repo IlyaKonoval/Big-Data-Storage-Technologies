@@ -1,6 +1,6 @@
 -- check: orphan_satellites
 -- severity: critical
--- description: Every satellite row hangs on an existing hub or link key
+-- description: Каждая строка сателлита привязана к существующему ключу хаба или линка
 SELECT 'sat_object_satcat_desc' AS satellite, hk_object AS hk FROM rv.sat_object_satcat_desc
 WHERE hk_object NOT IN (SELECT hk_object FROM rv.hub_object)
 UNION ALL

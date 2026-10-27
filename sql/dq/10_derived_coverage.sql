@@ -1,6 +1,6 @@
 -- check: derived_coverage
 -- severity: critical
--- description: Every valid GP / SupGP version has its computed business vault row
+-- description: Для каждой валидной версии GP / SupGP есть рассчитанная строка в business vault
 SELECT 'gp' AS source, hk_object, load_dts
 FROM rv.sat_object_orbit_gp
 WHERE mean_motion > 0 AND eccentricity >= 0 AND eccentricity < 1

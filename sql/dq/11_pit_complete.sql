@@ -1,6 +1,6 @@
 -- check: pit_complete
 -- severity: critical
--- description: Today's point-in-time snapshot has a row for every object in the hub
+-- description: В сегодняшнем снимке PIT есть строка для каждого объекта хаба
 SELECT today() AS snapshot_date, hub_objects, pit_rows
 FROM
 (

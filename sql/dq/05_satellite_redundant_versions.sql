@@ -1,6 +1,6 @@
 -- check: satellite_redundant_versions
 -- severity: critical
--- description: No two consecutive satellite versions of a key are identical (delta load works, every SCD2 interval is a real change)
+-- description: Нет двух подряд одинаковых версий сателлита по одному ключу (дельта-загрузка работает, каждый интервал SCD2 — реальное изменение)
 SELECT satellite, hk, load_dts
 FROM
 (

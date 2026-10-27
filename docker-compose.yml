@@ -256,6 +256,78 @@ services:
       - -c
       - airflow
 
+  # ---------------- BI (ЛР3): Superset + 3D globe, profile "bi" ----------------
+  # Metadata DB: database `superset` in airflow-postgres. Dashboards are code
+  # (superset/bootstrap.py, run by superset-bootstrap) and read ClickHouse database `mart`
+  # as the read-only user `superset`.
+  superset-init:
+    &superset-common
+    build: ./superset
+    image: bdst-superset:6.1.0
+    profiles: ["bi"]
+    command: ["/bin/bash", "/app/bootstrap/init.sh"]
+    # Mounted over the copies in the image, so edits apply without a rebuild.
+    volumes:
+      - ./superset/superset_config.py:/app/pythonpath/superset_config.py:ro
+      - ./superset/init.sh:/app/bootstrap/init.sh:ro
+      - ./superset/bootstrap.py:/app/bootstrap/bootstrap.py:ro
+    environment:
+      &superset-env
+      SUPERSET_SECRET_KEY: ${SUPERSET_SECRET_KEY:-bdst-superset-local-secret-change-me}
+      SUPERSET_DATABASE_URI: postgresql+psycopg2://airflow:airflow@airflow-postgres/superset
+      SUPERSET_ADMIN_USER: ${SUPERSET_ADMIN_USER:-admin}
+      SUPERSET_ADMIN_PASSWORD: ${SUPERSET_ADMIN_PASSWORD:-admin}
+      GLOBE_URL: http://localhost:8090
+    depends_on:
+      airflow-postgres:
+        condition: service_healthy
+
+  superset:
+    <<: *superset-common
+    command: ["/usr/bin/run-server.sh"]
+    ports:
+      - "8088:8088"
+    healthcheck:
+      test: ["CMD", "curl", "-fs", "http://localhost:8088/health"]
+      interval: 15s
+      retries: 10
+      start_period: 30s
+    restart: always
+    depends_on:
+      superset-init:
+        condition: service_completed_successfully
+      clickhouse:
+        condition: service_healthy
+
+  # Creates/updates the database connection, datasets, charts and the dashboard via the
+  # Superset REST API (idempotent), then exits.
+  superset-bootstrap:
+    <<: *superset-common
+    command: ["/app/.venv/bin/python", "/app/bootstrap/bootstrap.py"]
+    environment:
+      <<: *superset-env
+      SUPERSET_URL: http://superset:8088
+      CH_SUPERSET_URI: clickhousedb://superset:superset@clickhouse:8123/mart
+    restart: "no"
+    depends_on:
+      superset:
+        condition: service_healthy
+
+  # Static 3D globe (globe.gl + satellite.js) served by nginx; /ch/ proxies read-only
+  # queries to ClickHouse as user `superset`, so the page holds no credentials.
+  globe:
+    image: nginx:1.27.2-alpine
+    profiles: ["bi"]
+    volumes:
+      - ./globe:/usr/share/nginx/html:ro
+      - ./globe/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    ports:
+      - "8090:80"
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    restart: always
+
 volumes:
   airflow-postgres-data:
   airflow-logs:

@@ -19,6 +19,7 @@ DOC = """
 * предупреждения: расхождения в данных запуска, объекты вне SATCAT, эпохи в будущем, свежесть GP.
 
 Провал хотя бы одной `critical`-проверки роняет DAG; `warning` только фиксируется.
+Успешный `gate` публикует Asset `dq_passed`, по нему стартуют витрины (`build_marts`).
 """
 
 
@@ -37,7 +38,8 @@ def data_quality():
     def run_checks(dag_run=None) -> list[dict]:
         return dq.run_checks(dag_run.run_id)
 
-    @task
+    # The outlet event is emitted only when gate succeeds: marts build from checked data.
+    @task(outlets=[asset("dq", "passed")])
     def gate(results: list[dict]) -> None:
         failed = [r for r in results if r["severity"] == "critical" and not r["passed"]]
         warnings = [r["check"] for r in results if r["severity"] == "warning" and not r["passed"]]

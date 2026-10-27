@@ -1,6 +1,6 @@
 -- check: ods_vault_reconciliation
 -- severity: critical
--- description: Volumes before/after: every business key of the last vaulted ODS snapshot of each source is in the vault
+-- description: Объёмы до и после: каждый бизнес-ключ последнего загруженного снимка ODS каждого источника есть в vault
 WITH last AS
 (
     SELECT source, argMax(load_id, finished_at) AS load_id

@@ -1,6 +1,6 @@
 -- check: hub_key_consistency
 -- severity: critical
--- description: Each NORAD ID / launch has exactly one hash key, equal to md5 of the business key
+-- description: У каждого NORAD ID и запуска ровно один хеш-ключ, равный md5 бизнес-ключа
 SELECT 'hub_object' AS hub, toString(norad_cat_id) AS business_key, groupUniqArray(hk_object) AS keys
 FROM rv.hub_object
 GROUP BY norad_cat_id

@@ -1,6 +1,6 @@
 -- check: gp_freshness
 -- severity: warning
--- description: The newest GP snapshot in the vault was downloaded less than 8 hours ago
+-- description: Последний снимок GP в vault загружен менее 8 часов назад
 SELECT max(f.fetched_at) AS last_gp_download
 FROM meta.vault_log AS v FINAL
 INNER JOIN meta.raw_files AS f FINAL ON f.load_id = v.load_id

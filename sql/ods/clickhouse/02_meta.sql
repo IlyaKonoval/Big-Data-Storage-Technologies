@@ -76,3 +76,15 @@ CREATE TABLE IF NOT EXISTS meta.dq_results
 )
 ENGINE = MergeTree
 ORDER BY (run_id, check_name);
+
+-- One row per mart rebuild (build_marts DAG).
+CREATE TABLE IF NOT EXISTS meta.mart_log
+(
+    mart          LowCardinality(String),
+    run_id        String,
+    rows          UInt64,
+    duration_sec  Float64,
+    built_at      DateTime64(6) DEFAULT now64(6)
+)
+ENGINE = MergeTree
+ORDER BY (mart, built_at);
