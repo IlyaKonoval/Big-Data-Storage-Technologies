@@ -345,6 +345,9 @@ GP/SupGP из vault (`bv.object_current`), пропагирует их SGP4 (`sg
 
 ## 13. OpenMetadata: `openmetadata/`, `lineage.py`
 
+Подробный разбор (контейнеры, Postgres и Elasticsearch, ingestion, алгоритм lineage) — в
+[openmetadata.md](openmetadata.md).
+
 `om-ingest` (образ `openmetadata/ingestion-base`) работает в режиме `loop`: раз в
 `OM_INGEST_INTERVAL` секунд (по умолчанию 1 ч) выполняет по порядку:
 

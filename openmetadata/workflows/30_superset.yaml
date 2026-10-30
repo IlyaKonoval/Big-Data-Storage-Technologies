@@ -1,6 +1,6 @@
 # Superset dashboards and charts, read from Superset's metadata database (airflow-postgres,
-# database superset). Charts are linked to the mart tables of the ClickHouse service:
-# lineage mart.<table> -> chart -> dashboard.
+# database superset). Datasets are matched to the mart tables of the ClickHouse service:
+# lineage mart.<table> -> dataset (data model) -> dashboard; charts belong to the dashboard.
 source:
   type: superset
   serviceName: superset

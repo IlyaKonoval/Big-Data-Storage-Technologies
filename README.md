@@ -101,6 +101,7 @@ Assets.
   метаданные ClickHouse, SeaweedFS и Superset, публикует lineage, применяет описания из
   [`openmetadata/catalog.yaml`](openmetadata/catalog.yaml) и прогоняет тесты качества.
   Разовый прогон: `docker compose --profile meta run --rm om-ingest once`.
+  Как устроены OpenMetadata, Elasticsearch и lineage — [docs/openmetadata.md](docs/openmetadata.md).
 
 ## Структура
 

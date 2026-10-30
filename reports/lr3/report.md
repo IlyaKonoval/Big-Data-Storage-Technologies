@@ -197,7 +197,8 @@ SELECT ...
 1. **Ingestion-воркфлоу** [`openmetadata/workflows/`](../../openmetadata/workflows):
    ClickHouse (схемы `ods`, `stage`, `rv`, `bv`, `mart`, `meta`; временные `__new` исключены),
    бакет `raw` в SeaweedFS, Superset (графики, дашборды, датасеты). Lineage
-   `mart → датасет → график → дашборд` OpenMetadata строит сам по метаданным Superset.
+   `mart → датасет Superset → дашборд` OpenMetadata строит сам по метаданным Superset
+   (12 рёбер; графики не узлы графа, они входят в дашборд).
 2. **Lineage пайплайнов** — тот же код, что в DAG `publish_lineage` (§6.2).
 3. **Каталог как код** — [`openmetadata/catalog.yaml`](../../openmetadata/catalog.yaml),
    который применяет [`catalog.py`](../../openmetadata/catalog.py). Повторный прогон ничего не

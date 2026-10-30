@@ -17,7 +17,7 @@ DOC = """
 перечислены явно. Каждое ребро привязано к DAG-у (пайплайн в OpenMetadata) и несёт SQL.
 
 Путь: `S3 raw` → `ods.*` → `stage.*` → `rv.*` → `bv.*` → `mart.*`; дальше
-`mart.*` → графики → дашборды Superset добавляет ingestion-воркфлоу `om-ingest`.
+`mart.*` → датасеты → дашборды Superset добавляет ingestion-воркфлоу `om-ingest`.
 Таблицы в каталог тоже заносит `om-ingest`; ребро на ещё не известную таблицу пропускается.
 
 Адрес и учётные данные — Airflow Connection `openmetadata`. Если OpenMetadata не запущена
