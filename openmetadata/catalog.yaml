@@ -28,6 +28,9 @@ data_product:
     сближения опаснее всего. Строятся DAG-ом `build_marts` только после успешной проверки
     качества данных (`data_quality` → Asset `dq_passed`).
 
+# Lineage view depth in the UI (hops up and down; the server allows at most 3).
+lineage_depth: 3
+
 # Data Insights KPIs of the domain (computed by the Data Insights app, see catalog.py).
 kpis:
   start: 2026-10-28

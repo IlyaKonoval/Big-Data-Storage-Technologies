@@ -89,27 +89,42 @@
 Проверки DQ: уникальность ключей хабов, линки и сателлиты без хаба, две подряд одинаковые версии сателлита, сверка ODS↔vault, диапазоны (0 ≤ e < 1, inclination 0–180, mean_motion > 0, 0 ≤ max_prob ≤ 1), согласованность запуска (одна дата и площадка), свежесть GP. Critical-провал роняет DAG.
 
 ## Витрины и BI (ЛР3), схема `mart`
-Витрины строятся из Business Vault (`bv.pit_object` + сателлиты), а не из звезды.
-1. `mart_orbit_population`: число объектов по режиму орбиты, типу и стране (текущий срез)
-2. `mart_launch_activity`: запуски по годам и странам, доля Starlink
-3. `mart_conjunction_top`: топ опасных сближений и самые «конфликтные» объекты
-4. `mart_decay_watch`: объекты с падающим перигеем или ростом BSTAR (кандидаты на сход)
-5. `mart_constellation_growth`: рост группировок во времени (из истории сателлитов и PIT)
-6. `mart_gp_vs_supgp`: расхождение GP и SupGP по Starlink
-7. `mart_pipeline_health`: свежесть, объёмы, DQ
-DAG `build_marts` запускается по Asset `vault_business`. Дашборд Superset из 6–8 чартов (bar, line, heatmap, scatter, table, big number), выбор каждого обоснуем в отчёте.
-**OpenMetadata:** коннекторы к ClickHouse (ods, rv, bv, mart), S3 (SeaweedFS) и Airflow. Lineage `raw S3 → ods → stage → rv (raw vault) → bv (business vault) → mart` строим через парсинг журнала запросов ClickHouse (`system.query_log`, его читает коннектор OpenMetadata) плюс DAG `publish_lineage`, который явно добавляет рёбра через OpenMetadata Python SDK (надёжнее для шагов Python и S3→ODS).
+Подробно — в [отчёте ЛР3](../reports/lr3/report.md). Витрины строятся из Business Vault и Raw Vault (`bv.*`, `rv.*`, `meta.*`), ODS не читают.
+
+| Витрина | Вывод |
+|---|---|
+| `orbit_population` | что на орбите сейчас по режиму, типу и владельцу; доля мусора и «мёртвых» спутников |
+| `catalog_growth` | рост населённости орбиты с 1957 года; разрушения 2007/2009/2021 по году каталогизации |
+| `launch_activity`, `launch_sites` | темп запусков, доля Starlink, космодромы |
+| `altitude_shells` | плотность объектов по высоте × наклонению (оболочки Starlink, SSO) |
+| `conjunction_risk`, `conjunction_geo` | опасные сближения прогноза SOCRATES и их положение над Землёй |
+| `gp_vs_supgp` | расхождение NORAD (GP) и оператора (SupGP) по Starlink |
+| `chronicle`, `orbit_elements`, `ground_tracks`, `launch_arcs` | данные 3D-глобуса: хроника 1957–2026, TLE, трассы, дуги космодром → спутник |
+| `pipeline_health`, `dq_checks` | свежесть источников и итог DQ |
+
+**ETL.** DAG `build_marts` запускается по Asset `dq_passed`: его публикует `data_quality` только без critical-провалов, поэтому витрины строятся из проверенных данных. Каждая витрина пересобирается в `mart.<name>__new` и подменяет живую через `EXCHANGE TABLES`; журнал — `meta.mart_log`. Орбитальные витрины считает Python (SGP4 по элементам GP/SupGP из vault).
+
+**BI.** Superset 6.1 (профиль `bi`, метаданные — база `superset` в `airflow-postgres`); дашборды создаёт `superset/bootstrap.py` через REST API. «Околоземное пространство» — 13 графиков 10 типов на трёх вкладках; «Космос в 3D» — страницы сервиса `globe` (nginx + globe.gl + satellite.js) в iframe.
+
+**OpenMetadata** 1.13.6 (профиль `meta`, Elasticsearch 9.3, метаданные — база `openmetadata_db` в `airflow-postgres`). Контейнер `om-ingest` раз в час: ingestion ClickHouse, SeaweedFS и Superset; lineage пайплайнов; описания, глоссарий, домен, tiers и KPI из `openmetadata/catalog.yaml`; 226 тестов качества на всех 48 таблицах. Lineage `S3 raw → ods → stage → rv → bv → mart → Superset` (99 рёбер) выводится из нашего SQL (`plugins/celestrak/lineage.py`: цели `INSERT INTO` / `CREATE`, источники `FROM` / `JOIN`) и публикуется через REST API DAG-ом `publish_lineage`.
+
+*Изменения относительно плана.*
+- `build_marts` запускается по `dq_passed`, а не по `vault_business`: витрины не строятся из непроверенных данных.
+- Вместо `mart_decay_watch` и `mart_constellation_growth` сделаны `catalog_growth` (история с 1957 года по SATCAT: собственная история снимков слишком короткая) и витрины 3D-глобуса.
+- Lineage не из `system.query_log`, а из SQL-файлов проекта: query_log не знает о шагах Python (S3 → ODS, SGP4) и не привязывает рёбра к DAG. Вместо Python SDK — REST API (`requests`): SDK OpenMetadata конфликтует по зависимостям с Airflow.
+- Elasticsearch вместо OpenSearch: OpenMetadata 1.13 поддерживает оба, Elasticsearch — движок по умолчанию в её docker-compose.
+- Подключения DAG перенесены из переменных окружения в Airflow Connections (`airflow/config/connections.json`).
 
 ## Структура репозитория
 ```
-docker-compose.yml        # без профиля: airflow + clickhouse + seaweedfs; profiles: archive (postgres dwh, mysql), bi (superset), meta (openmetadata+opensearch)
+docker-compose.yml        # без профиля: airflow + clickhouse + seaweedfs; profiles: archive (postgres dwh, mysql), bi (superset, globe), meta (openmetadata + elasticsearch + om-ingest)
 .env.example
 airflow/{Dockerfile,requirements.txt}
 dags/{ingest_*.py, storage_benchmark.py, vault_*.py, data_quality.py, build_marts.py, publish_lineage.py}
 plugins/celestrak/{client.py, s3.py, targets.py, ingest.py, vault.py, dq.py, ...}
 sql/{ods/<dbms>/, vault/{ddl,load/<source>,bv}/, dq/, mart/, migrations/}   # DDL + трансформации
-superset/  openmetadata/       # конфиги/экспорт дашборда
-reports/{lr1.md, lr2.md, lr3.md, lr1_benchmark.ipynb}
+superset/  globe/  openmetadata/   # дашборды как код, 3D-глобус, каталог и ingestion
+reports/{lr1,lr2,lr3}/report.md
 ```
 Версии образов закрепляем точно (Airflow 3.x, Superset, OpenMetadata). Перед стартом проверить совместимость OpenMetadata с выбранной версией Airflow; ingestion OpenMetadata запускаем в его собственном контейнере, а не в нашем Airflow.
 

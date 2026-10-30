@@ -1,83 +1,193 @@
 @startuml architecture
-' Architecture of the CelesTrak data platform (docker-compose), state on 17.10.2026.
-' Solid arrows = data flow, dashed = Airflow Asset events (data-aware scheduling),
-' grey = planned components (ЛР3).
+' UML 2.5 deployment diagram of the CelesTrak data platform (docker-compose), state on 30.10.2026.
+' Nodes: «device» = physical machine, «executionEnvironment» = Docker container, named as an
+' instance (underlined "name : image"). The second compartment of a node lists what is
+' deployed on it (UML textual notation for deployed artifacts and components).
+' Communication paths are labelled with the protocol; the arrow points from the client to
+' the server. {profile = …} is the docker compose profile of the container (none = always up).
+' Rows: user interfaces, background processes, data stores.
 
 !theme plain
 skinparam defaultFontName Arial
-skinparam nodesep 35
-skinparam ranksep 45
-skinparam ArrowColor #444444
-skinparam rectangle {
-  BorderColor #555555
+skinparam defaultFontSize 12
+skinparam shadowing false
+skinparam nodesep 45
+skinparam ranksep 80
+skinparam ArrowColor #333333
+skinparam node {
+  BorderColor #333333
+  BackgroundColor #FFFFFF
 }
 
-cloud "CelesTrak API (celestrak.org)\nSATCAT · GP · SupGP · SOCRATES" as api #F2F2F2
+title Платформа данных CelesTrak — диаграмма развёртывания (UML 2.5)
 
-rectangle "Apache Airflow 3.0.6 · LocalExecutor · :8080" as airflow #DCE8FA {
-
-  rectangle "ЛР1 · загрузка по cron\nextract → load_ods → validate" as lr1 #FFFFFF {
-    rectangle "ingest_satcat\n03:00" as d_satcat
-    rectangle "ingest_gp\nкаждые 4 ч" as d_gp
-    rectangle "ingest_supgp\nкаждые 8 ч" as d_supgp
-    rectangle "ingest_socrates\nкаждые 12 ч" as d_socrates
-  }
-
-  rectangle "ЛР2 · Data Vault по Assets" as lr2 #FFFFFF {
-    rectangle "vault_satcat" as v_satcat
-    rectangle "vault_orbit" as v_orbit
-    rectangle "vault_conjunction" as v_conj
-    rectangle "vault_business" as v_business
-    rectangle "data_quality" as v_dq
-  }
+node "__Рабочая станция : PC__" <<device>> as ws {
+  node browser <<executionEnvironment>> [
+    <u>: Веб-браузер</u>
+    {graphics = WebGL}
+    ----
+    «library» globe.gl, satellite.js
+    «artifact» страницы глобуса (manifest)
+  ]
 }
 
-database "airflow-postgres\nметаданные Airflow" as af_db #EEEEEE
+node celestrak <<device>> [
+  <u>celestrak.org : Web Server</u>
+  {url = https://celestrak.org, повтор до обновления → 403}
+  ----
+  «dataset» SATCAT, GP, SupGP, SOCRATES
+]
 
-storage "SeaweedFS · S3 :8333\nraw/<source>/dt=YYYY-MM-DD/" as s3 #FFF4C2
+node "__Docker-хост : Docker Desktop__" <<device>> as host {
 
-rectangle "ClickHouse 24.8 · :8123 — основное хранилище" as ch #D8F0DF {
-  rectangle "ods\nснимки" as ch_ods #FFFFFF
-  rectangle "stage\nочистка, ключи" as ch_stage #FFFFFF
-  rectangle "rv · Raw Vault\nhubs, links, satellites" as ch_rv #FFFFFF
-  rectangle "bv · Business Vault\nderived, PIT, SCD2" as ch_bv #FFFFFF
-  rectangle "meta\nжурналы, dq_results" as ch_meta #FFFFFF
+  ' row 1: user interfaces
+  node af_api <<executionEnvironment>> [
+    <u>airflow-apiserver : bdst-airflow 3.0.6</u>
+    {port = 8080}
+    ----
+    «component» Airflow UI, REST API
+  ]
+  node superset <<executionEnvironment>> [
+    <u>superset : bdst-superset 6.1.0</u>
+    {profile = bi, port = 8088}
+    ----
+    «component» Superset
+    «file» superset_config.py
+  ]
+  node globe <<executionEnvironment>> [
+    <u>globe : nginx 1.27.2</u>
+    {profile = bi, port = 8090}
+    ----
+    «file» index.html, chronicle.html, common.js
+    «file» nginx.conf (/ch/ → clickhouse)
+  ]
+  node om <<executionEnvironment>> [
+    <u>openmetadata-server : OpenMetadata 1.13.6</u>
+    {profile = meta, port = 8585}
+    ----
+    «component» OpenMetadata Server
+  ]
+
+  ' row 2: background processes
+  node af_init <<executionEnvironment>> [
+    <u>airflow-init : bdst-airflow 3.0.6</u>
+    {lifecycle = one-shot}
+    ----
+    «file» connections.json
+  ]
+  node af_sched <<executionEnvironment>> [
+    <u>airflow-scheduler : bdst-airflow 3.0.6</u>
+    {executor = LocalExecutor}
+    ----
+    «source» dags/*.py
+    «library» plugins/celestrak/
+    «script» sql/vault, sql/dq, sql/mart
+  ]
+  node ss_boot <<executionEnvironment>> [
+    <u>superset-bootstrap : bdst-superset 6.1.0</u>
+    {profile = bi, lifecycle = one-shot}
+    ----
+    «script» bootstrap.py
+  ]
+  node om_ing <<executionEnvironment>> [
+    <u>om-ingest : ingestion-base 1.13.6</u>
+    {profile = meta, schedule = 1 h}
+    ----
+    «file» workflows/*.yaml, catalog.yaml
+    «script» ingest.py, catalog.py, quality.py
+  ]
+
+  ' row 3: data stores
+  node dwh_pg <<executionEnvironment>> [
+    <u>dwh-postgres : PostgreSQL 16.4</u>
+    {profile = archive}
+    ----
+    «database» dwh
+  ]
+  node mysql <<executionEnvironment>> [
+    <u>mysql : MySQL 8.4.3</u>
+    {profile = archive}
+    ----
+    «database» ods
+  ]
+  node seaweed <<executionEnvironment>> [
+    <u>seaweedfs : SeaweedFS 3.80</u>
+    {port = 8333}
+    ----
+    «bucket» raw/<source>/dt=…/
+  ]
+  node ch <<executionEnvironment>> [
+    <u>clickhouse : ClickHouse 24.8</u>
+    {port = 8123}
+    ----
+    «schema» ods, stage, rv, bv, mart, meta
+  ]
+  node pg <<executionEnvironment>> [
+    <u>airflow-postgres : PostgreSQL 16.4</u>
+    {port = 5432}
+    ----
+    «database» airflow, superset, openmetadata_db
+  ]
+  node es <<executionEnvironment>> [
+    <u>om-elasticsearch : Elasticsearch 9.3.0</u>
+    {profile = meta, port = 9200}
+    ----
+    «index» поисковые индексы
+  ]
 }
 
-rectangle "ЛР3 · план" as lr3 #F7F7F7 {
-  rectangle "mart.*" as marts #FFFFFF
-  rectangle "Superset" as superset #FFFFFF
-  rectangle "OpenMetadata" as om #FFFFFF
-}
+' --- communication paths (client --> server) -----------------------------------------------
+browser --> af_api : «HTTP» :8080
+browser --> superset : «HTTP» :8088
+browser --> globe : «HTTP» :8090\n(iframe дашборда)
+browser --> om : «HTTP» :8585
 
-' --- ingestion -------------------------------------------------------------------
-api --> lr1 : HTTP, 1 запрос на запуск\n403 → skipped
+af_api --> pg : «TCP» :5432
+af_init --> pg : «TCP» :5432
+af_sched -left-> celestrak : «HTTPS» :443
+af_sched --> dwh_pg : «TCP» :5432\n(postgres_dwh)
+af_sched --> mysql : «TCP» :3306\n(mysql_ods)
+af_sched --> seaweed : «S3 API» :8333\n(s3_raw)
+af_sched --> ch : «HTTP» :8123\n(clickhouse_dwh)
+af_sched --> pg : «TCP» :5432
+af_sched -up-> om : «HTTP REST» :8585\n(openmetadata)
 
-' --- Asset events (inside Airflow) -------------------------------------------------
-d_satcat ..> v_satcat : ods_satcat
-d_gp ..> v_orbit : ods_gp
-d_supgp ..> v_orbit : ods_supgp
-d_socrates ..> v_conj : ods_socrates
-v_satcat ..> v_business
-v_orbit ..> v_business
-v_conj ..> v_business
-v_business ..> v_dq : vault_business
+superset --> ch : «HTTP» :8123\nuser superset
+superset --> pg : «TCP» :5432
+ss_boot -up-> superset : «HTTP REST» :8088
+globe --> ch : «HTTP» :8123\nuser superset
 
-' --- data flow ---------------------------------------------------------------------
-lr1 --> s3 : сырой файл
-lr1 --> ch_ods : разбор, INSERT
-ch_ods -right-> ch_stage
-ch_stage -right-> ch_rv
-ch_rv -right-> ch_bv
-ch_bv -[hidden]right- ch_meta
-s3 -[hidden]down- ch_ods
-lr2 --> ch : SQL из sql/vault/:\nstage → rv → bv
-v_dq --> ch_meta : проверки
-airflow -left-> af_db
+om --> pg : «TCP» :5432
+om --> es : «HTTP» :9200
+om_ing -up-> om : «HTTP REST» :8585
+om_ing --> ch : «HTTP» :8123
+om_ing --> seaweed : «S3 API» :8333
+om_ing --> pg : «TCP» :5432\n(метаданные Superset)
 
-' --- ЛР3 (planned) ---------------------------------------------------------------
-ch_bv -[#999999,dashed]-> marts
-marts -[#999999,dashed]right-> superset
-ch -[#999999,dashed]-> om : lineage
+' column order inside each row
+af_api -[hidden]right-> superset
+superset -[hidden]right-> globe
+globe -[hidden]right-> om
+af_init -[hidden]right-> af_sched
+af_sched -[hidden]right-> ss_boot
+ss_boot -[hidden]right-> om_ing
+dwh_pg -[hidden]right-> mysql
+mysql -[hidden]right-> seaweed
+seaweed -[hidden]right-> ch
+ch -[hidden]right-> pg
+pg -[hidden]right-> es
+
+legend right
+  |= Нотация |= Значение |
+  | «device» | физическая машина |
+  | «executionEnvironment» | контейнер Docker: __имя : образ__ |
+  | отдел под чертой | развёрнутые в узле компоненты и артефакты |
+  | стрелка | коммуникационный путь, от клиента к серверу |
+  | (имя) у пути | Airflow Connection, через которое идёт обращение |
+  | {profile = …} | профиль docker compose; без профиля — всегда запущен |
+  Не показаны одноразовые контейнеры миграций superset-init, om-migrate,
+  om-db-init, а также airflow-dag-processor, airflow-triggerer и airflow-cli
+  (тот же образ Airflow, подключаются только к airflow-postgres).
+endlegend
 
 @enduml

@@ -118,6 +118,16 @@ class Catalog:
                              "endDate": ms(k["end"]), "owners": [owner],
                              "domains": [self.spec["domain"]["name"]]})
 
+    def ensure_lineage_depth(self) -> None:
+        """Lineage view depth: 3 hops each way show S3 -> ... -> Superset around rv."""
+        depth = self.spec["lineage_depth"]
+        cfg = self.om.request("GET", "/v1/system/settings/lineageSettings")["config_value"]
+        if (cfg["upstreamDepth"], cfg["downstreamDepth"]) != (depth, depth):
+            self.om.request("PUT", "/v1/system/settings", json={
+                "config_type": "lineageSettings",
+                "config_value": {**cfg, "upstreamDepth": depth, "downstreamDepth": depth}})
+            self.patched += 1
+
     def add_assets(self, kind: str, name: str, assets: list[dict]) -> None:
         for i in range(0, len(assets), 100):
             self.om.request("PUT", f"/v1/{kind}/{name}/assets/add",
@@ -227,6 +237,7 @@ class Catalog:
         self.ensure_vocabularies(owner)
         self.ensure_domain(owner)
         self.ensure_kpis(owner)
+        self.ensure_lineage_depth()
         self.apply_services(owner)
         tables = self.apply_tables(owner)
         other, dashboards = self.apply_bi_and_storage(owner)

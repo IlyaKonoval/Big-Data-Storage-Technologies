@@ -31,8 +31,9 @@ DDS построен в **ClickHouse**, который с 17.10 стал осн�
 
 ## 2. Архитектура слоя
 
-Вся система (PlantUML, исходник [`diagrams/architecture.puml`](../../diagrams/architecture.puml);
-сплошные стрелки — поток данных, пунктир — события Airflow Assets, серое — план ЛР3):
+Вся система — UML-диаграмма развёртывания (исходник
+[`diagrams/architecture.puml`](../../diagrams/architecture.puml); актуальна на ЛР3, Data Vault —
+это схемы `stage`, `rv`, `bv` в узле ClickHouse):
 
 ![Архитектура](../../diagrams/architecture.png)
 

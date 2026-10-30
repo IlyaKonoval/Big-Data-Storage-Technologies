@@ -1,8 +1,8 @@
 # Как устроены DAG и разбор API CelesTrak
 
 Документ описывает реализацию: как устроены DAG, как скачивается и разбирается ответ API,
-как данные попадают в ODS (ЛР1) и дальше в Data Vault (ЛР2). С 17.10.2026 основная СУБД —
-**ClickHouse** (ODS, `meta`, vault); PostgreSQL и MySQL в архиве и нужны только бенчмарку. Предметная область (поля, коды, сущности) —
+как данные попадают в ODS (ЛР1), дальше в Data Vault (ЛР2) и в витрины, BI и каталог (ЛР3).
+С 17.10.2026 основная СУБД — **ClickHouse** (ODS, `meta`, vault, витрины); PostgreSQL и MySQL в архиве и нужны только бенчмарку. Предметная область (поля, коды, сущности) —
 в [domain.md](domain.md), архитектура и план — в [architecture-plan.md](architecture-plan.md).
 
 ## Общая идея
@@ -22,12 +22,15 @@ plugins/celestrak/
   targets.py   КАК пишем в СУБД (ClickHouse; PostgreSQL / MySQL — для бенчмарка)
   meta.py      ЖУРНАЛЫ: meta.raw_files, meta.load_log, meta.benchmark_results
   ingest.py    ФАБРИКА DAG: собирает всё в extract → load_ods → validate
-  assets.py    Airflow Assets, связывающие слои: ods_* → vault_* → vault_business
+  assets.py    Airflow Assets, связывающие слои: ods_* → vault_* → vault_business → dq_passed → mart_all
   vault.py     ЗАГРУЗКА DATA VAULT: ODS-снимок → stage → hubs/links/satellites, business vault
   vault_dag.py ФАБРИКА DAG vault_satcat / vault_orbit / vault_conjunction
   dq.py        ПРОВЕРКИ КАЧЕСТВА: sql/dq/*.sql → meta.dq_results
+  marts.py     ВИТРИНЫ: sql/mart/*.sql → mart.* (атомарная подмена), meta.mart_log
+  orbits.py    ОРБИТАЛЬНЫЕ ВИТРИНЫ: SGP4 по элементам GP/SupGP из vault
+  lineage.py   LINEAGE: рёбра из SQL проекта → OpenMetadata REST API
   benchmark.py, report.py   сравнение СУБД и отчёт
-  config.py    параметры подключений из переменных окружения docker-compose
+  config.py    подключения из Airflow Connections, остальное — из переменных окружения
 ```
 
 Airflow добавляет папку `plugins/` в `sys.path`, поэтому DAG импортируют пакет как
@@ -280,6 +283,96 @@ SELECT ... FROM rv.sat_object_orbit_gp WHERE NOT (...)   -- строки = на�
 и 5 примеров в `meta.dq_results`. Задача `gate` роняет DAG, если провалилась хотя бы одна
 `critical`-проверка; `warning` только фиксируются. Новая проверка = новый файл, код не меняется.
 
+## 10. Подключения: Airflow Connections, `config.py`
+
+Адреса и учётные данные не зашиты в код и не передаются DAG переменными окружения: они лежат в
+Airflow Connections. Шаблон — [`airflow/config/connections.json`](../airflow/config/connections.json),
+пароли в нём записаны как `${CH_PASSWORD}` и т. п. `airflow-init` подставляет значения из
+окружения (`.env`) и выполняет `airflow connections import --overwrite`.
+
+| Connection | Тип | Кто использует |
+|---|---|---|
+| `clickhouse_dwh` | generic (HTTP :8123) | все DAG: ODS, vault, DQ, витрины, журналы `meta` |
+| `s3_raw` | aws (`endpoint_url` SeaweedFS, path-style) | `ingest_*` (через `S3Hook`), `storage_benchmark` |
+| `openmetadata` | http | `publish_lineage` |
+| `postgres_dwh`, `mysql_ods` | postgres, mysql | только `storage_benchmark` |
+
+`config.clickhouse()`, `config.postgres()`, `config.mysql()`, `config.openmetadata()` читают
+Connection через `airflow.sdk.Connection.get` и возвращают параметры подключения. Импорт
+Airflow ленивый: тот же код (`lineage.py`, `dq.py`) работает и в контейнере `om-ingest`, где
+Airflow нет.
+
+## 11. Витрины: `marts.py`, `orbits.py`, `sql/mart/`
+
+```
+data_quality ─(dq_passed)─► build_marts: ensure_schema → build_<mart> ×9 → build_orbits → publish ─(mart_all)─► publish_lineage
+```
+
+Одна SQL-витрина = один файл с шапкой:
+```sql
+-- mart: conjunction_risk                       имя таблицы в базе mart
+-- insight: the riskiest close approaches ...   какой вывод даёт витрина
+-- order_by: (tca, norad_cat_id_1, norad_cat_id_2)
+SELECT ...                                      один SELECT, только bv.* / rv.* / meta.*
+```
+`marts.build` собирает `mart.<name>__new` (`CREATE TABLE … ENGINE = MergeTree ORDER BY … AS
+SELECT`), затем `EXCHANGE TABLES` меняет её местами с живой таблицей, и старая удаляется.
+Обмен атомарен: дашборд видит либо старую, либо новую витрину целиком. Строки и длительность
+пишутся в `meta.mart_log`. Новая витрина = новый файл; задача в DAG появится сама.
+
+`orbits.py` строит витрины, которые нельзя выразить в SQL. Он берёт последние элементы
+GP/SupGP из vault (`bv.object_current`), пропагирует их SGP4 (`sgp4.SatrecArray`, векторно по
+всем объектам) и переводит TEME → земная система (поворот на звёздное время) → геодезические
+широту, долготу и высоту. Через ту же атомарную подмену пишет `conjunction_geo`, `launch_arcs`,
+`gp_vs_supgp`, `ground_tracks`, `orbit_elements` (TLE для глобуса).
+
+## 12. Superset и 3D-глобус: `superset/`, `globe/`
+
+- `superset/Dockerfile` — `apache/superset:6.1.0` + `clickhouse-connect` (драйвер `clickhousedb://`).
+- `superset/init.sh` (`superset-init`) — база метаданных `superset` в `airflow-postgres`,
+  миграции, пользователь admin.
+- `superset/bootstrap.py` (`superset-bootstrap`) — **дашборды как код**. Через REST API
+  создаёт или обновляет подключение «ClickHouse marts», датасет на каждую витрину, графики
+  (`CHARTS`: вкладка, имя, датасет, тип, параметры, размер), нативные фильтры и два дашборда.
+  Объекты ищутся по имени, поэтому повторный запуск обновляет их, а не дублирует.
+- `globe/` раздаёт nginx (сервис `globe`, :8090). Страницы `index.html` (текущее небо) и
+  `chronicle.html` (1957–2026) запрашивают витрины через `/ch/`: nginx проксирует запросы в
+  ClickHouse под пользователем `superset` (только `SELECT` на `mart`), поэтому учётные данные
+  в браузер не попадают. Положения спутников считает satellite.js (SGP4) в браузере.
+  Superset встраивает страницы iframe-ом (`GLOBE_URL`, `frame-src` в CSP `superset_config.py`).
+  Отдельный origin нужен для производительности: Chrome притормаживает анимацию в скрытых
+  iframe только с чужого origin.
+
+## 13. OpenMetadata: `openmetadata/`, `lineage.py`
+
+`om-ingest` (образ `openmetadata/ingestion-base`) работает в режиме `loop`: раз в
+`OM_INGEST_INTERVAL` секунд (по умолчанию 1 ч) выполняет по порядку:
+
+| Шаг | Код | Что делает |
+|---|---|---|
+| ingestion | `workflows/10_clickhouse.yaml`, `20_s3.yaml`, `30_superset.yaml` | `metadata ingest`: таблицы ClickHouse, бакет `raw`, графики/дашборды/датасеты Superset и lineage `mart → Superset` |
+| lineage | `celestrak.lineage.publish` | рёбра пайплайнов, как в DAG `publish_lineage` |
+| каталог | `catalog.yaml` + `catalog.py` | описания, владелец, слои, tiers, глоссарий, домен, дата-продукт, KPI, глубина lineage |
+| качество | `quality.py` | тесты на все таблицы + проверки `sql/dq`, прогон TestSuite-воркфлоу |
+| Data Insights | REST | перерасчёт KPI |
+
+**Lineage** (`plugins/celestrak/lineage.py`). `all_steps()` перечисляет шаги конвейера:
+загрузку S3 → `ods.<source>`, SQL-файлы vault, DDL представлений `bv`, проверки `sql/dq`,
+SQL-витрины и орбитальные витрины (`ORBIT_MARTS`). `parse()` вытаскивает из SQL цель
+(`INSERT INTO`, `CREATE TABLE`, `CREATE [OR REPLACE] VIEW`) и источники (`FROM`, `JOIN`).
+`publish()` заводит в OpenMetadata сервис `airflow` с пайплайном на каждый DAG и отправляет
+`PUT /v1/lineage` на каждое ребро, с пайплайном и SQL шага. Временные `__new` пропускаются,
+рёбра на таблицы, которых ещё нет в каталоге, ждут следующего прогона.
+
+**Каталог как код** (`catalog.py`). Каждая сущность сравнивается с `catalog.yaml` (описания —
+после `html.unescape`: сервер хранит их экранированными), и отправляется JSON Patch только
+с отличиями. Повторный прогон даёт 0 правок.
+
+**Тесты качества** (`quality.py`). На каждую из 48 таблиц — «не пуста» и «число колонок»;
+плюс not null / unique по ключам (`KEYS`, `NOT_NULL`), диапазоны (`RANGES`) и все 15 проверок
+`sql/dq` как `tableCustomSQLQuery`. Для таблицы без набора тестов первый запуск TestSuite
+только создаёт набор, поэтому воркфлоу запускается дважды.
+
 ## Служебные таблицы (`meta`, ClickHouse)
 
 | Таблица | Строка = | Зачем |
@@ -289,6 +382,7 @@ SELECT ... FROM rv.sat_object_orbit_gp WHERE NOT (...)   -- строки = на�
 | `meta.benchmark_results` | одно измерение бенчмарка | исходные данные для графиков сравнения |
 | `meta.vault_log` | снимок ODS, загруженный в vault | строк в ODS и staging, строк по шагам, длительность; водяной знак инкремента |
 | `meta.dq_results` | одна проверка в одном запуске DQ | число нарушений, примеры, пройдена ли |
+| `meta.mart_log` | сборка одной витрины | run_id, строк, длительность |
 
 `load_log` и `vault_log` — ReplacingMergeTree (повтор заменяет строку), читаются с `FINAL`.
 
@@ -307,6 +401,11 @@ WHERE run_id = (SELECT argMax(run_id, checked_at) FROM meta.dq_results);
 ## Где посмотреть вживую
 - **Airflow → DAG → Graph:** схема задач. Клик по задаче → **Logs**: лог запроса, размер
   файла, путь в S3, число строк и время, а у пропущенных запусков — текст ответа 403.
-- **Тесты:** `tests/test_parsing.py` (что подаётся на вход парсера и что получается) и
-  `tests/test_vault.py` (структура SQL-файлов vault и DQ). Запуск:
+- **Superset** (localhost:8088): дашборды «Околоземное пространство» и «Космос в 3D».
+- **OpenMetadata** (localhost:8585): таблица → вкладка **Lineage** (путь от S3 до Superset),
+  **Data Observability** (тесты), **Insights → KPIs**, **Govern → Glossary**.
+- **Тесты:** `tests/test_parsing.py` (что подаётся на вход парсера и что получается),
+  `tests/test_vault.py` (структура SQL-файлов vault и DQ), `tests/test_marts.py` (шапки витрин,
+  витрины не читают ODS), `tests/test_lineage.py` (разбор SQL, цепочка до S3),
+  `tests/test_catalog.py` (каталог покрывает таблицы, витрины, графики и проверки). Запуск:
   `.venv\Scripts\python -m pytest tests`.
