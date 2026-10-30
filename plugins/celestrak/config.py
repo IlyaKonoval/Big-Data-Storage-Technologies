@@ -1,4 +1,5 @@
-"""Connection settings, taken from environment variables set in docker-compose.yml."""
+"""Settings: endpoints and credentials from Airflow Connections, the rest from environment
+variables set in docker-compose.yml."""
 import os
 from dataclasses import dataclass
 
@@ -19,39 +20,45 @@ class DbSettings:
     password: str
 
 
+# Airflow Connections (airflow/config/connections.json).
+CLICKHOUSE_CONN = "clickhouse_dwh"
+S3_CONN = "s3_raw"
+OPENMETADATA_CONN = "openmetadata"
+POSTGRES_CONN = "postgres_dwh"
+MYSQL_CONN = "mysql_ods"
+
+
+def connection(conn_id: str):
+    """An Airflow Connection; imported here so the package also loads outside Airflow."""
+    from airflow.sdk import Connection
+
+    return Connection.get(conn_id)
+
+
+def _db(conn_id: str) -> DbSettings:
+    c = connection(conn_id)
+    return DbSettings(host=c.host, port=int(c.port), database=c.schema, user=c.login,
+                      password=c.password)
+
+
 def postgres() -> DbSettings:
-    return DbSettings(
-        host=_env("DWH_PG_HOST", "localhost"),
-        port=int(_env("DWH_PG_PORT", "5433")),
-        database=_env("DWH_PG_DB", "dwh"),
-        user=_env("DWH_PG_USER", "dwh"),
-        password=_env("DWH_PG_PASSWORD", "dwh"),
-    )
+    return _db(POSTGRES_CONN)
 
 
 def mysql() -> DbSettings:
-    return DbSettings(
-        host=_env("MYSQL_HOST", "localhost"),
-        port=int(_env("MYSQL_PORT", "3307")),
-        database=_env("MYSQL_DB", "ods"),
-        user=_env("MYSQL_USER", "dwh"),
-        password=_env("MYSQL_PASSWORD", "dwh"),
-    )
+    return _db(MYSQL_CONN)
 
 
 def clickhouse() -> DbSettings:
-    return DbSettings(
-        host=_env("CH_HOST", "localhost"),
-        port=int(_env("CH_PORT", "8123")),
-        database=_env("CH_DB", "ods"),
-        user=_env("CH_USER", "dwh"),
-        password=_env("CH_PASSWORD", "dwh"),
-    )
+    return _db(CLICKHOUSE_CONN)
 
 
-S3_ENDPOINT_URL = _env("S3_ENDPOINT_URL", "http://localhost:8333")
-S3_ACCESS_KEY = _env("S3_ACCESS_KEY", "bdst")
-S3_SECRET_KEY = _env("S3_SECRET_KEY", "bdst-secret")
+def openmetadata() -> tuple[str, str, str]:
+    """(API URL, admin e-mail, password) of OpenMetadata."""
+    c = connection(OPENMETADATA_CONN)
+    return f"{c.schema or 'http'}://{c.host}:{c.port}/api", c.login, c.password
+
+
 S3_RAW_BUCKET = _env("S3_RAW_BUCKET", "raw")
 
 USER_AGENT = _env("CELESTRAK_USER_AGENT", "bdst-student-project/1.0")

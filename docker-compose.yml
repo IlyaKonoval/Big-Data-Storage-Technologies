@@ -16,26 +16,10 @@ x-airflow-common:
     AIRFLOW__DAG_PROCESSOR__REFRESH_INTERVAL: '30'
     AIRFLOW_CONFIG: '/opt/airflow/config/airflow.cfg'
     # --- project settings (read by plugins/celestrak/config.py) ---
+    # Endpoints and credentials are Airflow Connections (airflow/config/connections.json,
+    # imported by airflow-init): clickhouse_dwh, s3_raw, openmetadata, postgres_dwh, mysql_ods.
     CELESTRAK_USER_AGENT: ${CELESTRAK_USER_AGENT:-bdst-student-project/1.0}
-    S3_ENDPOINT_URL: http://seaweedfs:8333
-    S3_ACCESS_KEY: ${S3_ACCESS_KEY:-bdst}
-    S3_SECRET_KEY: ${S3_SECRET_KEY:-bdst-secret}
     S3_RAW_BUCKET: raw
-    DWH_PG_HOST: dwh-postgres
-    DWH_PG_PORT: 5432
-    DWH_PG_DB: dwh
-    DWH_PG_USER: ${DWH_PG_USER:-dwh}
-    DWH_PG_PASSWORD: ${DWH_PG_PASSWORD:-dwh}
-    MYSQL_HOST: mysql
-    MYSQL_PORT: 3306
-    MYSQL_DB: ods
-    MYSQL_USER: ${MYSQL_USER:-dwh}
-    MYSQL_PASSWORD: ${MYSQL_PASSWORD:-dwh}
-    CH_HOST: clickhouse
-    CH_PORT: 8123
-    CH_DB: ods
-    CH_USER: ${CH_USER:-dwh}
-    CH_PASSWORD: ${CH_PASSWORD:-dwh}
     REPORTS_DIR: /opt/airflow/reports
     SQL_DIR: /opt/airflow/sql
   volumes:
@@ -235,6 +219,10 @@ services:
         /entrypoint airflow version
         /entrypoint airflow config list >/dev/null
         /entrypoint airflow pools set vault 1 "Serializes Data Vault loads (shared hubs)"
+        # Connections: the template gets the credentials below, then is imported (upsert).
+        python -c 'import os, sys; sys.stdout.write(os.path.expandvars(open(sys.argv[1]).read()))'           /opt/airflow/config/connections.json > /tmp/connections.json
+        /entrypoint airflow connections import --overwrite /tmp/connections.json
+        rm /tmp/connections.json
         chown -R "${AIRFLOW_UID:-50000}:0" /opt/airflow/logs /opt/airflow/config
     environment:
       <<: *airflow-common-env
@@ -242,6 +230,16 @@ services:
       _AIRFLOW_WWW_USER_CREATE: 'true'
       _AIRFLOW_WWW_USER_USERNAME: ${_AIRFLOW_WWW_USER_USERNAME:-airflow}
       _AIRFLOW_WWW_USER_PASSWORD: ${_AIRFLOW_WWW_USER_PASSWORD:-airflow}
+      # Credentials of the connections (only this one-shot service sees them).
+      CH_USER: ${CH_USER:-dwh}
+      CH_PASSWORD: ${CH_PASSWORD:-dwh}
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:-bdst}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:-bdst-secret}
+      OM_ADMIN_PASSWORD: ${OM_ADMIN_PASSWORD:-admin}
+      DWH_PG_USER: ${DWH_PG_USER:-dwh}
+      DWH_PG_PASSWORD: ${DWH_PG_PASSWORD:-dwh}
+      MYSQL_USER: ${MYSQL_USER:-dwh}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-dwh}
     user: "0:0"
 
   airflow-cli:
@@ -328,7 +326,115 @@ services:
         condition: service_healthy
     restart: always
 
+  # ---------------- Catalog + lineage (ЛР3): OpenMetadata, profile "meta" ----------------
+  # Metadata DB: database `openmetadata_db` in airflow-postgres; search index: Elasticsearch.
+  # Metadata comes from ingestion workflows (openmetadata/workflows/*.yaml, run by om-ingest),
+  # lineage of our SQL/Python steps from celestrak.lineage (om-ingest and DAG publish_lineage).
+  om-db-init:
+    image: postgres:16.4
+    profiles: ["meta"]
+    environment:
+      PGPASSWORD: airflow
+    command:
+      - bash
+      - -c
+      - >-
+        psql -h airflow-postgres -U airflow -d postgres -tAc
+        "SELECT 1 FROM pg_database WHERE datname = 'openmetadata_db'" | grep -q 1
+        || psql -h airflow-postgres -U airflow -d postgres -c "CREATE DATABASE openmetadata_db"
+    depends_on:
+      airflow-postgres:
+        condition: service_healthy
+    restart: "no"
+
+  om-elasticsearch:
+    image: elasticsearch:9.3.0
+    profiles: ["meta"]
+    environment:
+      discovery.type: single-node
+      xpack.security.enabled: "false"
+      ES_JAVA_OPTS: -Xms768m -Xmx768m
+    volumes:
+      - om-es-data:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s localhost:9200/_cluster/health | grep -qE 'green|yellow'"]
+      interval: 15s
+      retries: 20
+    restart: always
+
+  om-migrate:
+    &om-server
+    image: openmetadata/server:1.13.6
+    profiles: ["meta"]
+    command: ["./bootstrap/openmetadata-ops.sh", "migrate"]
+    environment:
+      &om-env
+      DB_DRIVER_CLASS: org.postgresql.Driver
+      DB_SCHEME: postgresql
+      DB_HOST: airflow-postgres
+      DB_PORT: 5432
+      DB_PARAMS: sslmode=disable
+      DB_USER: airflow
+      DB_USER_PASSWORD: airflow
+      OM_DATABASE: openmetadata_db
+      SEARCH_TYPE: elasticsearch
+      ELASTICSEARCH_HOST: om-elasticsearch
+      ELASTICSEARCH_PORT: 9200
+      ELASTICSEARCH_SCHEME: http
+      # Ingestion runs in om-ingest, not in OpenMetadata's own Airflow.
+      PIPELINE_SERVICE_CLIENT_ENABLED: "false"
+      SERVER_HOST_API_URL: http://openmetadata-server:8585/api
+      OPENMETADATA_HEAP_OPTS: -Xmx1G -Xms1G
+    depends_on:
+      om-db-init:
+        condition: service_completed_successfully
+      om-elasticsearch:
+        condition: service_healthy
+    restart: "no"
+
+  openmetadata-server:
+    <<: *om-server
+    command: ["/openmetadata-start.sh"]
+    ports:
+      - "8585:8585"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8586/healthcheck"]
+      interval: 15s
+      retries: 20
+      start_period: 60s
+    depends_on:
+      om-migrate:
+        condition: service_completed_successfully
+    restart: always
+
+  # Runs the ingestion workflows and publishes our lineage, then repeats every hour.
+  # One-off run before a demo: docker compose run --rm om-ingest once
+  om-ingest:
+    image: openmetadata/ingestion-base:1.13.6
+    profiles: ["meta"]
+    entrypoint: ["python", "/opt/om/ingest.py"]
+    command: ["loop"]
+    environment:
+      OM_URL: http://openmetadata-server:8585/api
+      OM_ADMIN_EMAIL: admin@open-metadata.org
+      OM_ADMIN_PASSWORD: ${OM_ADMIN_PASSWORD:-admin}
+      CH_USER: ${CH_USER:-dwh}
+      CH_PASSWORD: ${CH_PASSWORD:-dwh}
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:-bdst}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:-bdst-secret}
+      SQL_DIR: /opt/sql
+      PYTHONPATH: /opt/plugins
+    volumes:
+      - ./openmetadata:/opt/om:ro
+      - ./plugins:/opt/plugins:ro
+      - ./sql:/opt/sql:ro
+    depends_on:
+      openmetadata-server:
+        condition: service_healthy
+    restart: always
+
 volumes:
+  om-es-data:
   airflow-postgres-data:
   airflow-logs:
   seaweedfs-data:

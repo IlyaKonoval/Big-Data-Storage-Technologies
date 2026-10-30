@@ -1,0 +1,32 @@
+# Tables and views of the warehouse: ods -> stage -> rv -> bv -> mart, plus meta (journals).
+# Temporary mart builds (mart.<name>__new) are skipped. Lineage between the tables is
+# published by celestrak.lineage from our SQL, not taken from ClickHouse's query log.
+source:
+  type: clickhouse
+  serviceName: clickhouse
+  serviceConnection:
+    config:
+      type: Clickhouse
+      scheme: clickhouse+http
+      hostPort: clickhouse:8123
+      username: ${CH_USER}
+      password: ${CH_PASSWORD}
+  sourceConfig:
+    config:
+      type: DatabaseMetadata
+      includeViews: true
+      schemaFilterPattern:
+        includes: ["^ods$", "^stage$", "^rv$", "^bv$", "^mart$", "^meta$"]
+      tableFilterPattern:
+        excludes: [".*__new$"]
+      markDeletedTables: true
+sink:
+  type: metadata-rest
+  config: {}
+workflowConfig:
+  loggerLevel: INFO
+  openMetadataServerConfig:
+    hostPort: ${OM_URL}
+    authProvider: openmetadata
+    securityConfig:
+      jwtToken: ${OM_JWT}

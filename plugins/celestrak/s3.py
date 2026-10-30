@@ -1,20 +1,14 @@
 
-import boto3
-from botocore.client import Config
 from botocore.exceptions import ClientError
 
 from celestrak import config
 
 
 def client():
-    return boto3.client(
-        "s3",
-        endpoint_url=config.S3_ENDPOINT_URL,
-        aws_access_key_id=config.S3_ACCESS_KEY,
-        aws_secret_access_key=config.S3_SECRET_KEY,
-        region_name="us-east-1",
-        config=Config(signature_version="s3v4", s3={"addressing_style": "path"}),
-    )
+    """boto3 S3 client of the Airflow connection s3_raw (endpoint, keys, path-style)."""
+    from airflow.providers.amazon.aws.hooks.s3 import S3Hook
+
+    return S3Hook(aws_conn_id=config.S3_CONN).get_conn()
 
 
 def ensure_bucket(bucket: str = config.S3_RAW_BUCKET) -> None:

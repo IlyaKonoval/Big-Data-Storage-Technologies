@@ -14,7 +14,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from celestrak import config, meta
+from celestrak import config
 
 log = logging.getLogger(__name__)
 
@@ -48,6 +48,10 @@ def load_checks() -> list[Check]:
 
 
 def run_checks(run_id: str) -> list[dict]:
+    # Imported here: parsing the checks must not need the ClickHouse driver (OpenMetadata
+    # runs them as tests from its ingestion image, see openmetadata/quality.py).
+    from celestrak import meta
+
     results = []
     with meta.client() as ch:
         for check in load_checks():

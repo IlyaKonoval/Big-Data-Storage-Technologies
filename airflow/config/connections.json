@@ -1,0 +1,49 @@
+{
+  "clickhouse_dwh": {
+    "conn_type": "generic",
+    "description": "ClickHouse: the warehouse (ods, stage, rv, bv, mart, meta), HTTP interface",
+    "host": "clickhouse",
+    "port": 8123,
+    "schema": "ods",
+    "login": "${CH_USER}",
+    "password": "${CH_PASSWORD}"
+  },
+  "s3_raw": {
+    "conn_type": "aws",
+    "description": "SeaweedFS (S3 API): immutable raw files of CelesTrak",
+    "login": "${S3_ACCESS_KEY}",
+    "password": "${S3_SECRET_KEY}",
+    "extra": {
+      "endpoint_url": "http://seaweedfs:8333",
+      "region_name": "us-east-1",
+      "config_kwargs": {"signature_version": "s3v4", "s3": {"addressing_style": "path"}}
+    }
+  },
+  "openmetadata": {
+    "conn_type": "http",
+    "description": "OpenMetadata REST API (profile meta), for DAG publish_lineage",
+    "host": "openmetadata-server",
+    "port": 8585,
+    "schema": "http",
+    "login": "admin@open-metadata.org",
+    "password": "${OM_ADMIN_PASSWORD}"
+  },
+  "postgres_dwh": {
+    "conn_type": "postgres",
+    "description": "PostgreSQL of the LR1 storage benchmark (profile archive)",
+    "host": "dwh-postgres",
+    "port": 5432,
+    "schema": "dwh",
+    "login": "${DWH_PG_USER}",
+    "password": "${DWH_PG_PASSWORD}"
+  },
+  "mysql_ods": {
+    "conn_type": "mysql",
+    "description": "MySQL of the LR1 storage benchmark (profile archive)",
+    "host": "mysql",
+    "port": 3306,
+    "schema": "ods",
+    "login": "${MYSQL_USER}",
+    "password": "${MYSQL_PASSWORD}"
+  }
+}

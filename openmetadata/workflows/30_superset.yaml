@@ -1,0 +1,32 @@
+# Superset dashboards and charts, read from Superset's metadata database (airflow-postgres,
+# database superset). Charts are linked to the mart tables of the ClickHouse service:
+# lineage mart.<table> -> chart -> dashboard.
+source:
+  type: superset
+  serviceName: superset
+  serviceConnection:
+    config:
+      type: Superset
+      hostPort: http://localhost:8088
+      connection:
+        type: Postgres
+        hostPort: airflow-postgres:5432
+        username: airflow
+        authType:
+          password: airflow
+        database: superset
+  sourceConfig:
+    config:
+      type: DashboardMetadata
+      lineageInformation:
+        dbServicePrefixes: ["clickhouse.default.mart"]
+sink:
+  type: metadata-rest
+  config: {}
+workflowConfig:
+  loggerLevel: INFO
+  openMetadataServerConfig:
+    hostPort: ${OM_URL}
+    authProvider: openmetadata
+    securityConfig:
+      jwtToken: ${OM_JWT}

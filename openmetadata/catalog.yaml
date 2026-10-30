@@ -1,0 +1,441 @@
+# Curated metadata of the CelesTrak platform, applied to OpenMetadata by catalog.py
+# (service om-ingest, after every ingestion round). Ingestion never overwrites these
+# descriptions: ClickHouse has no comments on our tables, so this file is their only source.
+#
+# Texts are Markdown (folded `>` blocks: one paragraph each). Tables are "<schema>.<table>"; column descriptions are shared by name
+# (columns) unless a table overrides them (tables.<t>.columns).
+
+team:
+  name: data-platform
+  displayName: Платформа данных
+  description: Команда учебной платформы данных CelesTrak (курс «Технологии хранения больших данных»).
+
+domain:
+  name: NearEarthSpace
+  displayName: Околоземное пространство
+  domainType: Consumer-aligned
+  description: >
+    Данные о космических объектах на орбите Земли из открытых источников CelesTrak:
+    каталог SATCAT, орбитальные элементы GP (NORAD) и SupGP (операторы), прогноз сближений
+    SOCRATES. Хранилище — ClickHouse (Data Vault 2.0), витрины — база `mart`.
+
+data_product:
+  name: near-earth-analytics
+  displayName: Аналитика околоземного пространства
+  description: >
+    Витрины `mart.*` и дашборды Superset «Околоземное пространство» и «Космос в 3D»:
+    кто и что на орбите, как росла населённость с 1957 года, где теснее всего и какие
+    сближения опаснее всего. Строятся DAG-ом `build_marts` только после успешной проверки
+    качества данных (`data_quality` → Asset `dq_passed`).
+
+# Data Insights KPIs of the domain (computed by the Data Insights app, see catalog.py).
+kpis:
+  start: 2026-10-28
+  end: 2026-12-31
+  items:
+    description-coverage:
+      displayName: Описания у ресурсов
+      chart: percentage_of_data_asset_with_description_kpi
+      target: 95
+      description: >
+        Доля ресурсов домена с описанием: таблицы, дашборды, графики, пайплайны, бакет.
+        Описания ведутся в `openmetadata/catalog.yaml`.
+    ownership-coverage:
+      displayName: Владельцы у ресурсов
+      chart: percentage_of_data_asset_with_owner_kpi
+      target: 100
+      description: >
+        Доля ресурсов домена, у которых назначен владелец (команда «Платформа данных»).
+
+services:
+  databaseServices/clickhouse:
+    displayName: ClickHouse (хранилище)
+    description: >
+      Аналитическое хранилище платформы. Слои — отдельные базы ClickHouse:
+      `ods` → `stage` → `rv` (Raw Vault) → `bv` (Business Vault) → `mart`, журналы — `meta`.
+  storageServices/seaweedfs:
+    displayName: SeaweedFS (S3, сырые файлы)
+    description: >
+      S3-совместимое хранилище сырых ответов CelesTrak. Бакет `raw`, ключ
+      `<источник>/dt=<дата>/<источник>_<время>.<формат>`; файлы неизменяемы, их метаданные — `meta.raw_files`.
+  dashboardServices/superset:
+    displayName: Superset (BI)
+    description: Apache Superset 6.1. Дашборды описаны кодом в `superset/bootstrap.py` и читают только базу `mart`.
+  pipelineServices/airflow:
+    displayName: Airflow (оркестрация)
+    description: >
+      Apache Airflow 3. DAG-и связаны Asset-ами (data-aware scheduling):
+      `ingest_*` → `vault_*` → `vault_business` → `data_quality` → `build_marts` → `publish_lineage`.
+
+containers:
+  seaweedfs.raw:
+    displayName: raw — сырые ответы CelesTrak
+    description: >
+      Неизменяемые снимки четырёх источников: `gp` и `supgp` (OMM JSON), `satcat` (CSV),
+      `socrates` (CSV). Каждый файл — одна загрузка; из него DAG `ingest_<источник>`
+      заполняет `ods.<источник>`.
+
+# Classification of the layers; each table gets the tag of its schema.
+layers:
+  classification:
+    name: Layer
+    displayName: Слой хранилища
+    description: Слой архитектуры хранилища, к которому относится таблица.
+  tags:
+    ods: {name: ODS, displayName: ODS, description: "Оперативный слой: снимки источников как есть, по строке на запись файла, с `load_id`."}
+    stage: {name: Stage, displayName: Stage, description: "Подготовка одного снимка к загрузке в vault: хеш-ключи и hashdiff. Пересоздаётся при каждой загрузке."}
+    rv: {name: RawVault, displayName: Raw Vault, description: "Data Vault 2.0: хабы, линки, сателлиты с полной историей (insert-only)."}
+    bv: {name: BusinessVault, displayName: Business Vault, description: "Производные данные и удобные представления поверх Raw Vault: вычисленные орбиты, PIT-таблица, текущее состояние."}
+    mart: {name: Mart, displayName: Витрина, description: "Витрины для BI: агрегаты под конкретный аналитический вопрос, пересобираются целиком."}
+    meta: {name: Meta, displayName: Служебный журнал, description: "Журналы платформы: загрузки, проверки качества, сборки витрин."}
+
+schemas:
+  ods: Оперативный слой (ODS). Снимки источников CelesTrak без преобразований; каждая загрузка помечена `load_id`, `loaded_at` и `source_file`.
+  stage: Staging для Data Vault. Один снимок источника с рассчитанными хеш-ключами и hashdiff; таблица пересоздаётся при каждой загрузке.
+  rv: Raw Vault (Data Vault 2.0). Хабы — бизнес-ключи, линки — связи, сателлиты — атрибуты с полной историей. Только вставка, дубли схлопывает ReplacingMergeTree.
+  bv: Business Vault. Производные орбитальные параметры, PIT-таблица и представления «текущее состояние» / «история» для витрин.
+  mart: Витрины данных (ЛР3). Каждая отвечает на один аналитический вопрос; собирается DAG-ом `build_marts` во временную таблицу и атомарно подменяет живую (`EXCHANGE TABLES`).
+  meta: Служебные журналы платформы — сырые файлы, загрузки, vault, проверки качества, сборки витрин, бенчмарк СУБД.
+
+# Tier: 1 = feeds the dashboards (the dashboards are Tier1 too), 2 = analytical core,
+# 3 = technical layers.
+tiers:
+  Tier1: [mart.orbit_population, mart.catalog_growth, mart.launch_activity, mart.altitude_shells,
+          mart.conjunction_risk, mart.gp_vs_supgp, mart.orbit_elements, mart.chronicle,
+          mart.launch_sites, mart.launch_arcs, mart.ground_tracks, mart.conjunction_geo]
+  Tier2: [bv.object_current, bv.conjunction_current, bv.pit_object, bv.sat_object_orbit_derived,
+          bv.object_desc_history, bv.object_status_history, mart.pipeline_health, mart.dq_checks]
+  Tier3: [ods.*, stage.*, rv.*, meta.*]
+
+glossary:
+  name: SpaceObjects
+  displayName: Космические объекты
+  description: Термины предметной области — каталог космических объектов, орбиты, сближения.
+  terms:
+    NoradId:
+      displayName: NORAD ID
+      synonyms: [SATCAT number, номер каталога]
+      description: Номер объекта в каталоге NORAD/USSPACECOM (`norad_cat_id`). Бизнес-ключ хаба `rv.hub_object`; присваивается по порядку каталогизации.
+      columns: [norad_cat_id, norad_cat_id_1, norad_cat_id_2]
+    IntlDesignator:
+      displayName: Международное обозначение (COSPAR)
+      synonyms: [COSPAR ID, international designator]
+      description: Год, номер запуска в году и буква фрагмента, например `1998-067A` (МКС). Без буквы — обозначение запуска, бизнес-ключ `rv.hub_launch`.
+      columns: [object_id, launch_designator]
+    GP:
+      displayName: GP (General Perturbations)
+      synonyms: [TLE, OMM]
+      description: Орбитальные элементы каталога NORAD для модели SGP4 в формате OMM (JSON). Обновляются несколько раз в сутки.
+    SupGP:
+      displayName: SupGP
+      description: Дополнительные элементы, рассчитанные по данным операторов (SpaceX и др.). Сравнение с GP — витрина `mart.gp_vs_supgp`.
+    SATCAT:
+      displayName: SATCAT
+      description: Каталог всех когда-либо каталогизированных объектов — тип, владелец, даты запуска и схода с орбиты, параметры орбиты.
+    Conjunction:
+      displayName: Сближение
+      synonyms: [conjunction, SOCRATES]
+      description: Прогноз опасного сближения двух объектов (SOCRATES, на 7 дней вперёд) — момент наибольшего сближения, минимальная дистанция, вероятность столкновения.
+    TCA:
+      displayName: TCA
+      synonyms: [time of closest approach]
+      description: Момент наибольшего сближения пары объектов (UTC).
+      columns: [tca]
+    CollisionProbability:
+      displayName: Вероятность столкновения
+      description: Максимальная вероятность столкновения пары по SOCRATES (`max_prob`), 0…1. Значения от 1e-4 считаются опасными.
+      columns: [max_prob]
+    OrbitRegime:
+      displayName: Орбитальный режим
+      synonyms: [LEO, MEO, GEO, HEO]
+      description: "Класс орбиты: LEO — низкая (период < 128 мин), MEO — средняя (навигация), GEO — геостационарная (сутки, почти круговая), HEO — высокоэллиптическая."
+      columns: [orbit_regime]
+    Debris:
+      displayName: Космический мусор
+      synonyms: [DEB, обломки]
+      description: Объекты типа `DEB` — фрагменты разрушений, а также отработавшие ступени ракет (`R/B`). Доля мусора — ключевой показатель витрин.
+      columns: [debris]
+    Starlink:
+      displayName: Starlink
+      description: Спутники SpaceX Starlink (имя начинается с `STARLINK`). Больше половины действующих спутников; выделены в витринах отдельным признаком.
+      columns: [is_starlink, starlink, involves_starlink]
+    HashKey:
+      displayName: Хеш-ключ Data Vault
+      description: MD5 бизнес-ключа в нижнем регистре hex (`hk_*`); hashdiff — MD5 всех атрибутов сателлита для обнаружения изменений.
+      columns: [hk_object, hk_launch, hk_conjunction, hk_object_launch, hk_object_1, hk_object_2, hashdiff, set_hashdiff]
+
+# Shared column descriptions (by column name).
+columns:
+  norad_cat_id: Номер объекта в каталоге NORAD.
+  norad_cat_id_1: NORAD ID первого объекта пары.
+  norad_cat_id_2: NORAD ID второго объекта пары.
+  object_name: Имя объекта по каталогу (например, `ISS (ZARYA)`, `STARLINK-1007`).
+  object_name_1: Имя первого объекта пары.
+  object_name_2: Имя второго объекта пары.
+  object_id: Международное обозначение (COSPAR), например `1998-067A`.
+  object_type: "Тип объекта: `PAY` — полезная нагрузка (спутник), `R/B` — ступень ракеты, `DEB` — обломок, `UNK` — не определён."
+  object_type_1: Тип первого объекта пары.
+  object_type_2: Тип второго объекта пары.
+  object_type_name: Расшифровка типа объекта.
+  owner: Владелец/страна по коду SATCAT (`US`, `PRC`, `CIS`, …).
+  owner_1: Владелец первого объекта пары.
+  owner_2: Владелец второго объекта пары.
+  orbit_center: Центральное тело орбиты (`EA` — Земля).
+  ops_status_code: "Операционный статус SATCAT: `+` работает, `-` не работает, `P`/`B`/`S`/`X` частично, `D` сошёл с орбиты."
+  is_active: Объект действует (по операционному статусу).
+  decay_date: Дата схода с орбиты; пусто — объект на орбите.
+  in_orbit: Объект каталогизирован и не сошёл с орбиты Земли.
+  launch_date: Дата запуска.
+  launch_site: Код космодрома SATCAT (`TYMSC` — Байконур, `AFETR` — мыс Канаверал, …).
+  launch_designator: Обозначение запуска (COSPAR без буквы фрагмента).
+  rcs: Эффективная площадь рассеяния, м² — оценка размера объекта.
+  epoch: Эпоха орбитальных элементов (UTC).
+  mean_motion: Среднее движение, оборотов в сутки.
+  eccentricity: Эксцентриситет орбиты.
+  inclination: Наклонение орбиты, градусы.
+  ra_of_asc_node: Долгота восходящего узла, градусы.
+  arg_of_pericenter: Аргумент перицентра, градусы.
+  mean_anomaly: Средняя аномалия, градусы.
+  bstar: Баллистический коэффициент B* (торможение в атмосфере).
+  mean_motion_dot: Первая производная среднего движения.
+  mean_motion_ddot: Вторая производная среднего движения.
+  element_set_no: Номер набора элементов.
+  rev_at_epoch: Номер витка на эпоху.
+  ephemeris_type: Тип эфемерид (0 — SGP4).
+  classification_type: Гриф (`U` — открыто).
+  rms: Среднеквадратичная ошибка подгонки орбиты оператором, км.
+  data_source: Источник данных оператора SupGP.
+  period: Период обращения, минуты.
+  period_min: Период обращения, минуты.
+  apogee: Высота апогея, км.
+  perigee: Высота перигея, км.
+  apogee_km: Высота апогея, км.
+  perigee_km: Высота перигея, км.
+  semi_major_axis_km: Большая полуось орбиты, км.
+  orbit_regime: Орбитальный режим — LEO, MEO, GEO или HEO.
+  data_status_code: Статус данных SATCAT (`NCE` — нет текущих элементов, `NIE` — нет начальных, `NEA` — нет элементов).
+  orbit_type: Тип орбиты SATCAT (`ORB` — орбита, `LAN` — посадка, `IMP` — падение, `DOC` — стыковка, `R/T` — возврат).
+  tca: Момент наибольшего сближения (UTC).
+  tca_range: Минимальная дистанция сближения, км.
+  tca_range_km: Минимальная дистанция сближения, км.
+  tca_relative_speed: Относительная скорость при сближении, км/с.
+  relative_speed_km_s: Относительная скорость при сближении, км/с.
+  max_prob: Максимальная вероятность столкновения (0…1).
+  dilution: Порог разбавления вероятности SOCRATES (неопределённость орбит).
+  dse_1: Возраст элементов первого объекта на момент сближения, сутки.
+  dse_2: Возраст элементов второго объекта на момент сближения, сутки.
+  is_starlink: Объект — спутник Starlink.
+  starlink: Число спутников Starlink.
+  involves_starlink: В паре есть спутник Starlink.
+  pair_kind: Состав пары по типам объектов (`PAY / PAY`, `DEB / PAY`, `PAY / R/B`, …).
+  hk_object: Хеш-ключ объекта (MD5 NORAD ID).
+  hk_launch: Хеш-ключ запуска (MD5 обозначения запуска).
+  hk_conjunction: Хеш-ключ сближения — MD5 пары NORAD ID (`id_1||id_2`).
+  hk_object_launch: Хеш-ключ связи «объект — запуск».
+  hk_object_1: Хеш-ключ первого объекта пары.
+  hk_object_2: Хеш-ключ второго объекта пары.
+  hashdiff: MD5 атрибутов сателлита — новая версия пишется только при изменении.
+  set_hashdiff: MD5 всех TCA пары в снимке — сателлит сближения мультиактивный и версионируется набором.
+  load_dts: Момент загрузки снимка (ODS `loaded_at`), версия записи в vault.
+  record_source: S3-ключ сырого файла, из которого пришла запись.
+  load_id: Идентификатор загрузки (снимка) — общий для `meta.raw_files`, `ods.*`, `meta.load_log`.
+  loaded_at: Момент загрузки снимка в ODS.
+  source_file: S3-ключ сырого файла.
+  source: Источник CelesTrak (`gp`, `supgp`, `satcat`, `socrates`).
+  snapshot_date: Дата снимка, на которую собрано состояние.
+  latitude: Широта, градусы.
+  longitude: Долгота, градусы.
+  altitude_km: Высота над Землёй, км.
+  objects: Число объектов.
+  debris: Число обломков (`DEB`).
+  year: Год.
+  year_start: Первый день года (для оси времени в Superset).
+  launches: Число запусков.
+  payloads: Число выведенных полезных нагрузок.
+  objects_in_orbit: Сколько из этих объектов сейчас на орбите.
+  run_id: Идентификатор запуска DAG-а Airflow.
+  checked_at: Момент проверки качества данных.
+  check_name: Имя проверки (файл `sql/dq/NN_<имя>.sql`).
+  severity: "Критичность проверки: `critical` останавливает построение витрин, `warning` — нет."
+  description: Описание проверки.
+  violations: Число нарушений.
+  passed: Проверка пройдена.
+  sample: Примеры нарушающих строк.
+  name: Название.
+  code: Код справочника.
+  country: Страна.
+
+tables:
+  ods.gp:
+    description: Снимки GP — орбитальные элементы NORAD всех активных спутников (группа `active`, OMM JSON). Строка = объект в снимке.
+  ods.supgp:
+    description: Снимки SupGP — элементы по данным операторов (Starlink, OneWeb, …). Сравниваются с GP в `mart.gp_vs_supgp`.
+  ods.satcat:
+    description: Снимки каталога SATCAT — все объекты, когда-либо каталогизированные (~72 тыс.), с типом, владельцем, датами запуска и схода.
+  ods.socrates:
+    description: Снимки прогноза сближений SOCRATES на 7 дней — пары объектов, TCA, дистанция, вероятность столкновения.
+  stage.gp: {description: "Один снимок GP с хеш-ключом объекта и hashdiff — вход для `rv.hub_object` и `rv.sat_object_orbit_gp`."}
+  stage.supgp: {description: "Один снимок SupGP с хеш-ключом и hashdiff — вход для `rv.sat_object_orbit_supgp`."}
+  stage.satcat: {description: "Один снимок SATCAT с ключами объекта, запуска и связи и тремя hashdiff (описание, статус, запуск)."}
+  stage.socrates: {description: "Один снимок SOCRATES с ключами пары и сближения и hashdiff прогноза."}
+  rv.hub_object: {description: "Хаб космических объектов. Бизнес-ключ — NORAD ID; пополняется всеми четырьмя источниками."}
+  rv.hub_launch: {description: "Хаб запусков. Бизнес-ключ — международное обозначение запуска (`1998-067`)."}
+  rv.link_object_launch: {description: "Линк «объект — запуск»: каким запуском выведен объект."}
+  rv.link_conjunction: {description: "Линк сближения — пара объектов (NORAD ID 1 < 2); моменты TCA хранятся в сателлите."}
+  rv.sat_object_satcat_desc: {description: "Сателлит описания объекта из SATCAT: имя, тип, владелец, центральное тело. История изменений."}
+  rv.sat_object_satcat_status: {description: "Сателлит статуса из SATCAT: операционный статус, дата схода, параметры орбиты, RCS. История изменений."}
+  rv.sat_launch: {description: "Сателлит запуска — дата и космодром."}
+  rv.sat_object_orbit_gp: {description: "Сателлит орбитальных элементов GP (NORAD) — новая версия на каждую новую эпоху."}
+  rv.sat_object_orbit_supgp: {description: "Сателлит орбитальных элементов SupGP (операторы)."}
+  rv.sat_conjunction: {description: "Сателлит параметров сближения из SOCRATES — дистанция, скорость, вероятность."}
+  rv.sts_conjunction: {description: "Статусный сателлит сближения: появилось в прогнозе / исчезло из прогноза."}
+  rv.ref_launch_site: {description: "Справочник космодромов: код SATCAT, название, страна, координаты (сид в DDL)."}
+  rv.ref_object_type: {description: "Справочник типов объектов SATCAT."}
+  rv.ref_ops_status: {description: "Справочник операционных статусов SATCAT и признак «действует»."}
+  bv.sat_object_orbit_derived:
+    description: Вычисленные параметры орбиты для каждой версии элементов GP/SupGP — период, большая полуось, перигей, апогей, орбитальный режим.
+  bv.pit_object:
+    description: PIT-таблица (point-in-time) — на каждую дату снимка ссылки на актуальные версии сателлитов объекта. Основа «текущего состояния».
+  bv.object_current:
+    description: >
+      **Главное представление для витрин**: одна строка на объект — последнее известное
+      состояние из PIT, описание, статус, орбита (GP, иначе SATCAT), запуск и космодром.
+    columns:
+      has_gp: Есть элементы GP.
+      has_supgp: Есть элементы SupGP.
+      gp_epoch: Эпоха последних элементов GP.
+      gp_ldts: Версия (load_dts) элементов GP в PIT.
+      supgp_ldts: Версия (load_dts) элементов SupGP в PIT.
+  bv.conjunction_current: {description: "Текущий прогноз сближений: последние версии сателлита сближения, ещё не исчезнувшие из прогноза SOCRATES."}
+  bv.object_desc_history: {description: "SCD2-история описания объектов: интервалы действия `valid_from` / `valid_to`."}
+  bv.object_status_history: {description: "SCD2-история статусов объектов — когда объект перестал работать или сошёл с орбиты."}
+
+  mart.orbit_population:
+    description: >
+      **Что сейчас на орбите.** Объекты по орбитальному режиму, типу и владельцу; сколько
+      действующих и «мёртвых» спутников, обломков и Starlink. Вкладка «Обзор» дашборда.
+    columns:
+      active_payloads: Действующие спутники.
+      inactive_payloads: Недействующие спутники («мёртвые»).
+      avg_perigee_km: Средняя высота перигея, км.
+  mart.catalog_growth:
+    description: >
+      **Рост населённости орбиты с 1957 года.** По годам и типам: каталогизировано, сошло
+      с орбиты, на орбите на конец года. Год появления оценён по номеру NORAD (обломки
+      получают год разрушения, а не запуска родителя) — видны ступени 2007, 2009, 2021.
+    columns:
+      catalogued: Каталогизировано за год.
+      decayed: Сошло с орбиты за год.
+      in_orbit: На орбите на конец года (нарастающий итог).
+  mart.launch_activity:
+    description: "**Темп запусков** по годам, владельцам и космодромам; доля Starlink в запусках и выведенных спутниках."
+    columns:
+      starlink_launches: Запуски Starlink.
+      starlink_payloads: Выведено спутников Starlink.
+      launch_site_name: Название космодрома.
+  mart.launch_sites:
+    description: "**Космодромы мира**: запуски и объекты по площадкам, годы первого и последнего запуска, сколько объектов ещё на орбите."
+    columns:
+      active_payloads: Действующих спутников с этого космодрома.
+      first_year: Год первого запуска.
+      last_year: Год последнего запуска.
+  mart.altitude_shells:
+    description: >
+      **Где теснее всего в LEO**: число объектов по ячейкам «высота перигея 25 км ×
+      наклонение 5°». Видны оболочки Starlink (~550 км, 53°/43°/70°/97°) и солнечно-синхронный пояс.
+    columns:
+      inclination_deg: Нижняя граница ячейки наклонения, градусы.
+      altitude_km: Нижняя граница ячейки высоты, км.
+  mart.conjunction_risk:
+    description: >
+      **Самые опасные сближения** текущего прогноза SOCRATES: обе стороны с именами,
+      типами и владельцами, состав пары, участие Starlink. Вкладка «Риски».
+    columns:
+      forecast_loaded_at: Момент загрузки прогноза SOCRATES.
+  mart.gp_vs_supgp:
+    description: >
+      **NORAD против оператора**: для спутников Starlink расхождение положения по GP и SupGP
+      на один момент времени (SGP4) — насколько каталог NORAD отстаёт от данных SpaceX.
+    columns:
+      gp_epoch: Эпоха элементов GP.
+      supgp_epoch: Эпоха элементов SupGP.
+      epoch_gap_hours: Разница эпох, часы.
+      distance_km: Расхождение положения, км.
+      radial_diff_km: Расхождение по высоте, км.
+      compared_at: Момент, на который сравнивались положения.
+  mart.orbit_elements:
+    description: TLE всех объектов с элементами GP — для 3D-глобуса (SGP4 в браузере, satellite.js).
+    columns:
+      tle_line1: Первая строка TLE.
+      tle_line2: Вторая строка TLE.
+  mart.ground_tracks:
+    description: Трассы избранных объектов (МКС, Тяньгун, Хаббл, Starlink) на ближайший виток — слой «Витки» глобуса.
+    columns:
+      track_group: Группа трасс на глобусе.
+      segment: Номер сегмента (трасса разрезается на антимеридиане).
+      path_json: Точки трассы, JSON [[широта, долгота, высота], …].
+      mean_altitude_km: Средняя высота на витке, км.
+  mart.launch_arcs:
+    description: Дуги «космодром → текущее положение спутника» — слой «Космодромы → GEO» глобуса.
+    columns:
+      site_name: Название космодрома.
+      site_latitude: Широта космодрома.
+      site_longitude: Долгота космодрома.
+      launch_year: Год запуска.
+  mart.conjunction_geo:
+    description: Точки сближений над Землёй (положение пары на момент TCA, SGP4) — слой «Где сближения» глобуса.
+  mart.chronicle:
+    description: >
+      Каждый объект, когда-либо бывший на орбите Земли, с интервалом пребывания — для
+      хроники 1957–2026 на глобусе (небо заполняется запуск за запуском, вспыхивают разрушения).
+    columns:
+      appear_year: Год появления (дробный), по оценке даты каталогизации.
+      decay_year: Год схода с орбиты (дробный); пусто — на орбите.
+  mart.pipeline_health:
+    description: "**Здоровье платформы**: свежесть каждого источника, число снимков, объём сырых данных, отставание vault, итог последней проверки качества."
+    columns:
+      last_fetched_at: Последнее успешное скачивание.
+      hours_since_fetch: Часов с последнего скачивания.
+      snapshots: Снимков в хранилище.
+      raw_bytes: Объём сырых файлов, байт.
+      last_snapshot_rows: Строк в последнем снимке.
+      snapshots_not_in_vault: Снимков, ещё не загруженных в vault.
+      dq_checked_at: Момент последней проверки качества.
+      dq_passed: Проверок пройдено.
+      dq_failed_critical: Провалено critical-проверок.
+      dq_warnings: Предупреждений.
+  mart.dq_checks:
+    description: Последний результат каждой проверки качества данных — что упало, сколько строк, примеры.
+
+  meta.raw_files: {description: "Журнал сырых файлов в S3: ключ, URL источника, размер, SHA-256, запуск DAG-а."}
+  meta.load_log: {description: "Журнал загрузок ODS — источник, строк, длительность, статус, ошибка."}
+  meta.vault_log: {description: "Журнал загрузок снимков в Raw Vault — строк в ODS и stage, шаги, длительность."}
+  meta.dq_results: {description: "Результаты всех прогонов проверок качества данных (DAG `data_quality`)."}
+  meta.mart_log: {description: "Журнал сборок витрин — витрина, строк, длительность."}
+  meta.benchmark_results: {description: "Результаты бенчмарка СУБД из ЛР1 (PostgreSQL, MySQL, ClickHouse)."}
+
+dashboards:
+  Околоземное пространство: >
+    Аналитический дашборд. **Обзор** — что сейчас на орбите и кому принадлежит;
+    **История** — рост населённости с 1957 года, темп запусков, плотность LEO;
+    **Риски** — опасные сближения и расхождение NORAD с оператором. Фильтры: орбита, тип, владелец.
+  Космос в 3D: >
+    Интерактивный 3D-глобус (сервис `globe`, встроен iframe-ом): **Сейчас** — ~17 тыс.
+    спутников в реальном времени по SGP4, космодромы, витки, места сближений;
+    **Хроника 1957–2026** — таймлапс заполнения орбиты с ключевыми событиями.
+
+# Why each chart has its type (the dashboard justification of ЛР3).
+charts:
+  Объектов на орбите: Big Number — одно ключевое число, которое должно читаться мгновенно.
+  Активные спутники: Big Number — сколько из объектов на орбите реально работает.
+  Космический мусор: Big Number — число обломков, главный показатель засорённости орбиты.
+  Starlink на орбите: Big Number — масштаб одной группировки на фоне всей орбиты.
+  Состав по орбитам и типам: Столбцы с накоплением — сравнение режимов орбит и долей типов объектов внутри каждого.
+  Кому принадлежит орбита: Sunburst — иерархия «режим → владелец» с длинным хвостом мелких владельцев.
+  Рост населённости орбиты 1957–2026: Область с накоплением — накопленный тренд по типам; видны ступени разрушений 2007, 2009, 2021.
+  Запуски по годам и доля Starlink: Столбцы + линия на второй оси — объём запусков и доля Starlink на одной шкале времени.
+  "Где теснее всего: высота (км) × наклонение (°)": Тепловая карта — плотность по двум непрерывным осям; оболочки Starlink и солнечно-синхронный пояс видны как яркие ячейки.
+  Самые опасные сближения (прогноз SOCRATES): Таблица с условным форматированием — нужны конкретные пары, имена и значения.
+  Кто с кем сближается: Круговая диаграмма — доли немногих категорий пар (спутник, обломок, ступень).
+  Самые «конфликтные» объекты: Горизонтальные столбцы — ранжирование объектов по числу сближений.
+  "Starlink: насколько NORAD (GP) расходится с оператором (SupGP)": Гистограмма — распределение расхождений в километрах, видны типичное значение и хвост.
